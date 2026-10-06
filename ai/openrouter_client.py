@@ -18,11 +18,17 @@ class OpenRouterError(Exception):
 # Failures worth retrying on the next model in the fallback chain: rate
 # limits, upstream provider/server errors, a request that timed out or came
 # back empty, and "model not found/unavailable" - OpenRouter's free-model
-# lineup changes often (slugs get retired/promoted to paid with little
-# notice), so a 404 here usually means "this specific model slug is gone",
-# not "this request is malformed" (which would fail identically everywhere
-# and isn't itself a model slug problem).
+# lineup changes often (slugs get retired/renamed/promoted to paid with
+# little notice, confirmed in production: both 404 "model unavailable" and
+# 400 "not a valid model ID" have been observed for a stale/wrong slug), so
+# these usually mean "this specific model slug is wrong/gone", not "this
+# request is malformed" (which would fail identically everywhere).
 _RETRYABLE_STATUS_CODES = {404, 429, 500, 502, 503, 504}
+
+# A 400 is ambiguous (could be a bad model slug OR a genuinely malformed
+# request) - only treat it as retryable when OpenRouter's own error message
+# says so, so a real malformed-request 400 still fails fast as intended.
+_RETRYABLE_400_MARKERS = ("not a valid model id", "model not found")
 
 
 def _call_model(messages, model: str, temperature: float, max_tokens: int) -> str:
@@ -86,7 +92,11 @@ def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600, m
             last_error = e
             is_last = i == len(candidates) - 1
             status = _extract_status_code(str(e))
-            retryable = status is None or status in _RETRYABLE_STATUS_CODES
+            retryable = (
+                status is None
+                or status in _RETRYABLE_STATUS_CODES
+                or (status == 400 and any(marker in str(e).lower() for marker in _RETRYABLE_400_MARKERS))
+            )
             if not retryable or is_last:
                 raise
             logger.warning("OpenRouter model '%s' failed (%s) - falling back to next model", candidate, e)

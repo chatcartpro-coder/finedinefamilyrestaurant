@@ -56,10 +56,10 @@ class Config:
     OPENROUTER_FALLBACK_MODELS = [
         m.strip() for m in os.getenv(
             "OPENROUTER_FALLBACK_MODELS",
-            "nvidia/nemotron-3-super:free,"
+            "nvidia/nemotron-3-super-120b-a12b:free,"
             "thinkingmachines/inkling-small:free,"
             "google/gemma-4-31b-it:free,"
-            "nvidia/nemotron-3-nano-omni:free,"
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,"
             "~google/gemini-flash-latest",
         ).split(",") if m.strip()
     ]
