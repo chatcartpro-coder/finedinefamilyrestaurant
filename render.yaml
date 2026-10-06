@@ -38,9 +38,21 @@ services:
         value: Fine Dine Family Restaurant
       - key: STORE_PHONE
         sync: false
+      - key: STORE_TIMEZONE
+        value: Asia/Dubai
       - key: DELIVERY_FEE
-        value: "5"
+        value: "0"
       - key: FREE_DELIVERY_THRESHOLD
-        value: "50"
+        value: "10"
       - key: CURRENCY
         value: AED
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_CONFIG_ID
+        sync: false
+      - key: BILLING_API_BASE_URL
+        sync: false
+      - key: BILLING_API_KEY
+        sync: false
