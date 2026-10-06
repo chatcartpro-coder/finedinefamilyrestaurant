@@ -171,6 +171,16 @@ def _init_schema(conn):
     if "payment_status" not in cols:
         conn.execute("ALTER TABLE orders ADD COLUMN payment_status TEXT")
         conn.commit()
+    if "order_type" not in cols:
+        # 'delivery' | 'pickup' | 'dine_in' - is_pickup is kept in sync for
+        # backward compat (both pickup and dine_in set is_pickup=1, since
+        # both skip delivery fee/address/agent assignment the same way) but
+        # order_type is now the source of truth for what gets printed/shown.
+        # Backfill existing rows from is_pickup since order_type didn't exist
+        # before this column was added.
+        conn.execute("ALTER TABLE orders ADD COLUMN order_type TEXT")
+        conn.execute("UPDATE orders SET order_type = CASE WHEN is_pickup = 1 THEN 'pickup' ELSE 'delivery' END")
+        conn.commit()
 
     customer_cols = [row[1] for row in conn.execute("PRAGMA table_info(customers)").fetchall()]
     if "last_address_text" not in customer_cols:
@@ -278,8 +288,17 @@ def get_recent_history(phone: str, limit: int = 10):
 _ORDER_COLUMNS = (
     "id, phone, status, subtotal, delivery_fee, total, delivery_lat, delivery_lng, "
     "delivery_address_text, is_pickup, delivery_agent_phone, notes, created_at, confirmed_at, "
-    "discount_applied, printed_at, payment_status"
+    "discount_applied, printed_at, payment_status, order_type"
 )
+
+# Human-readable order_type labels, shared by main.py's WhatsApp receipt and
+# admin/routes.py's new-order alert payload. Falls back to is_pickup for any
+# pre-order_type-column row that somehow still has a NULL order_type.
+ORDER_TYPE_LABELS = {"delivery": "Delivery", "pickup": "Takeaway / Pickup", "dine_in": "Dine-in"}
+
+
+def order_type_label(order: dict) -> str:
+    return ORDER_TYPE_LABELS.get(order.get("order_type")) or ("Takeaway / Pickup" if order.get("is_pickup") else "Delivery")
 
 
 def get_active_order(phone: str):
@@ -387,7 +406,8 @@ def set_order_delivery(order_id: int, lat: float, lng: float, delivery_fee: floa
             discount = compute_discount(offer, order["subtotal"] or 0)
     total = max((order["subtotal"] or 0) - discount, 0) + delivery_fee
     conn.execute("""
-        UPDATE orders SET delivery_lat = ?, delivery_lng = ?, delivery_fee = ?, total = ?, delivery_address_text = ?
+        UPDATE orders SET delivery_lat = ?, delivery_lng = ?, delivery_fee = ?, total = ?, delivery_address_text = ?,
+            order_type = 'delivery'
         WHERE id = ?
     """, (lat, lng, delivery_fee, total, address_text, order_id))
     conn.commit()
@@ -409,16 +429,18 @@ def set_order_delivery_text(order_id: int, address_text: str, delivery_fee: floa
             discount = compute_discount(offer, order["subtotal"] or 0)
     total = max((order["subtotal"] or 0) - discount, 0) + delivery_fee
     conn.execute("""
-        UPDATE orders SET delivery_lat = NULL, delivery_lng = NULL, delivery_fee = ?, total = ?, delivery_address_text = ?
+        UPDATE orders SET delivery_lat = NULL, delivery_lng = NULL, delivery_fee = ?, total = ?, delivery_address_text = ?,
+            order_type = 'delivery'
         WHERE id = ?
     """, (delivery_fee, total, address_text, order_id))
     conn.commit()
 
 
-def set_order_pickup(order_id: int):
-    """Marks an order as pickup instead of delivery - no delivery fee, no
+def _set_order_no_delivery(order_id: int, order_type: str):
+    """Shared by set_order_pickup/set_order_dine_in: no delivery fee, no
     location needed, and the delivery-agent flow is skipped entirely since
-    there's nothing to hand off."""
+    there's nothing to hand off - identical handling, just a different
+    order_type label for the receipt/admin UI."""
     conn = _get_conn()
     order = get_order(order_id)
     discount = 0.0
@@ -429,10 +451,18 @@ def set_order_pickup(order_id: int):
             discount = compute_discount(offer, order["subtotal"] or 0)
     total = max((order["subtotal"] or 0) - discount, 0)
     conn.execute(
-        "UPDATE orders SET is_pickup = 1, delivery_fee = 0, total = ? WHERE id = ?",
-        (total, order_id),
+        "UPDATE orders SET is_pickup = 1, order_type = ?, delivery_fee = 0, total = ? WHERE id = ?",
+        (order_type, total, order_id),
     )
     conn.commit()
+
+
+def set_order_pickup(order_id: int):
+    _set_order_no_delivery(order_id, "pickup")
+
+
+def set_order_dine_in(order_id: int):
+    _set_order_no_delivery(order_id, "dine_in")
 
 
 def apply_order_discount(order_id: int, offer_id: int | None):
@@ -515,7 +545,7 @@ def get_unprinted_confirmed_orders():
 def _order_row_to_dict(row):
     keys = ["id", "phone", "status", "subtotal", "delivery_fee", "total", "delivery_lat", "delivery_lng",
             "delivery_address_text", "is_pickup", "delivery_agent_phone", "notes", "created_at", "confirmed_at",
-            "discount_applied", "printed_at", "payment_status"]
+            "discount_applied", "printed_at", "payment_status", "order_type"]
     return dict(zip(keys, row))
 
 
@@ -870,6 +900,32 @@ def get_all_messages(start: str = None, end: str = None):
     """, params)
     keys = ["created_at", "phone", "name", "direction", "message"]
     return [dict(zip(keys, row)) for row in cur.fetchall()]
+
+
+def get_orders_since(last_seen_id: int) -> list:
+    """Confirmed-or-later orders with id > last_seen_id, oldest first -
+    powers the admin dashboard's live new-order alert (popup + beep), polled
+    from the browser every few seconds (see base.html). Only confirmed+
+    orders count as "new" here (not draft/awaiting_confirmation), since
+    those aren't real orders yet."""
+    conn = _get_conn()
+    cur = conn.execute(f"""
+        SELECT {_ORDER_COLUMNS}
+        FROM orders
+        WHERE id > ? AND status IN ('confirmed', 'packed', 'picked_up', 'delivered')
+        ORDER BY id ASC
+    """, (last_seen_id,))
+    return [_order_row_to_dict(row) for row in cur.fetchall()]
+
+
+def get_latest_order_id() -> int:
+    """Highest order id that currently exists (any status) - used to
+    initialize the dashboard's "last seen" baseline on first page load, so
+    the alert doesn't fire for every pre-existing order the moment the admin
+    opens the dashboard."""
+    conn = _get_conn()
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM orders").fetchone()
+    return row[0]
 
 
 def get_orders(start: str = None, end: str = None, status: str = None):

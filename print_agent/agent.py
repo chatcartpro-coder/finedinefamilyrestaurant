@@ -98,16 +98,32 @@ def acknowledge_order(server_url: str, token: str, order_id: int):
 def _write_receipt(printer, order: dict, store_name: str, currency: str):
     """Renders the actual receipt content onto an already-open python-escpos
     printer object. Shared by both connection types (network/bluetooth) so
-    the receipt layout only needs to be defined and maintained once."""
+    the receipt layout only needs to be defined and maintained once.
+    order_type_label/amount_excl_vat/vat_amount/customer_name come from
+    print_agent/routes.py's _serialize_order() - the admin dashboard's order
+    serializer, not computed here, so this stays a thin rendering layer."""
+    order_type_label = order.get("order_type_label") or ("Takeaway" if order.get("order_type") == "pickup" else "Delivery")
+
     printer.set(align="center", bold=True, width=2, height=2)
     printer.text(f"{store_name}\n")
+    printer.set(align="center", bold=False, width=1, height=1)
+    printer.text("-" * 32 + "\n")
+
+    # Order type is the first thing printed after the store name, in bold,
+    # so kitchen/counter staff can tell at a glance whether to pack for
+    # delivery, bag for takeaway, or prepare for a dine-in customer who'll
+    # be seated shortly - no need to read the whole receipt first.
+    printer.set(align="center", bold=True, width=2, height=1)
+    printer.text(f"*** {order_type_label.upper()} ***\n")
     printer.set(align="center", bold=False, width=1, height=1)
     printer.text("-" * 32 + "\n")
 
     printer.set(align="left")
     printer.text(f"Order #{order['id']}\n")
     printer.text(f"Confirmed: {(order['confirmed_at'] or '')[:16].replace('T', ' ')}\n")
-    printer.text(f"Customer: {order['phone']}\n")
+    if order.get("customer_name"):
+        printer.text(f"Customer: {order['customer_name']}\n")
+    printer.text(f"Phone: {order['phone']}\n")
     printer.text("-" * 32 + "\n")
 
     for item in order["items"]:
@@ -118,14 +134,20 @@ def _write_receipt(printer, order: dict, store_name: str, currency: str):
 
     printer.text("-" * 32 + "\n")
     printer.text(f"Subtotal: {currency} {order['subtotal']:.2f}\n")
-    printer.text(f"Delivery: {currency} {order['delivery_fee']:.2f}\n")
+    if order.get("order_type") not in ("pickup", "dine_in"):
+        printer.text(f"Delivery: {currency} {order['delivery_fee']:.2f}\n")
     if order.get("discount_applied"):
         printer.text("Discount applied\n")
     printer.set(bold=True)
     printer.text(f"TOTAL: {currency} {order['total']:.2f}\n")
     printer.set(bold=False)
+    if order.get("vat_amount") is not None:
+        printer.text(f"(incl. VAT {currency} {order['vat_amount']:.2f}, excl. VAT {currency} {order['amount_excl_vat']:.2f})\n")
 
-    if order.get("delivery_address_text"):
+    if order.get("order_type") == "dine_in":
+        printer.text("-" * 32 + "\n")
+        printer.text("DINE-IN - prepare for the customer at the restaurant.\n")
+    elif order.get("delivery_address_text"):
         printer.text("-" * 32 + "\n")
         printer.text(f"Deliver to: {order['delivery_address_text']}\n")
     if order.get("notes"):

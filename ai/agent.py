@@ -27,6 +27,7 @@ CONFIRM_WORDS = {"confirm", "yes", "yep", "yeah", "ok", "okay", "place order", "
 CANCEL_WORDS = {"cancel", "no", "nope", "stop", "wait", "change"}
 DELIVERY_WORDS = {"delivery", "deliver"}
 PICKUP_WORDS = {"pickup", "pick up", "pick-up", "collect", "self pickup", "self-pickup", "takeaway", "take away"}
+DINE_IN_WORDS = {"dine in", "dine-in", "dinein", "eating in", "eat in", "at the restaurant", "table"}
 
 # Signals a message is probably a delivery address rather than a food item -
 # not a full address parser, just enough to distinguish "12 Al Wasl Road,
@@ -67,8 +68,9 @@ from the menu, and never be pushy about it.
 - Keep a running mental order as the customer adds items; when you list it, list each item with qty, unit price, \
 and line total.
 - Once the customer seems finished ordering (e.g. "that's it", "checkout", "done"), ask whether this is for \
-DELIVERY or PICKUP if not already stated.
-  - For pickup: no location needed, no delivery fee - go straight to the final itemized total.
+DELIVERY, PICKUP (takeaway), or DINE-IN if not already stated.
+  - For pickup or dine-in: no location needed, no delivery fee - go straight to the final itemized total. For \
+dine-in, let them know their order will be prepared and ready for them at the restaurant.
   - For delivery: if the customer has a saved address (see "Saved address" below), ask them to confirm it's still \
 correct ("Deliver to {{saved address}} again? Reply YES or share a new location") instead of asking them to share \
 location from scratch. If they have no saved address, ask them to either share their location using WhatsApp's \
@@ -78,12 +80,14 @@ don't need to use the location feature if it's easier to type it.
 that appears after a spoken message), read the address back to them explicitly and ask them to confirm it's \
 correct before finalizing the order, since speech-to-text can mishear house/building numbers and street names - \
 don't treat a transcribed address with the same confidence as a typed one or a shared location pin.
-- Once you have everything needed (items, size/clarification choices, delivery-or-pickup, and a confirmed address \
-if delivery), present the final itemized order: items, subtotal, delivery fee (0 for pickup), and total in \
-{currency}. End that message by asking the customer to reply CONFIRM to place the order or CANCEL to change it. \
-Always phrase it this way so the system can detect the reply. Move toward this final confirmation efficiently once \
-the cart, delivery/pickup choice, and address (if needed) are all settled - don't ask further clarifying questions \
-once nothing is actually ambiguous, and don't linger once you have what you need.
+- Once you have everything needed (items, size/clarification choices, delivery/pickup/dine-in choice, and a \
+confirmed address if delivery), present the final itemized order: items, subtotal, delivery fee (0 for pickup/\
+dine-in), and total in {currency}. All menu prices already include VAT - never add VAT on top or mention it unless \
+the customer specifically asks, in which case note that prices are VAT-inclusive. End that message by asking the \
+customer to reply CONFIRM to place the order or CANCEL to change it. Always phrase it this way so the system can \
+detect the reply. Move toward this final confirmation efficiently once the cart, delivery/pickup/dine-in choice, and \
+address (if needed) are all settled - don't ask further clarifying questions once nothing is actually ambiguous, and \
+don't linger once you have what you need.
 - Once an order's items are settled (customer seems done adding more), proactively suggest one or two popular \
 extras that pair well (e.g. a drink, a side, or a dessert) from the menu context if something relevant is shown - \
 but only once, and only from what's actually in the menu context, never invented. Don't push this into every reply.
@@ -137,6 +141,8 @@ def _format_cart_context(order: dict | None, items: list) -> str:
 def _format_delivery_context(order: dict | None) -> str:
     if not order:
         return "(No active order.)"
+    if order.get("order_type") == "dine_in":
+        return "Dine-in order - no delivery fee, no location needed."
     if order.get("is_pickup"):
         return "Pickup order - no delivery fee, no location needed."
     if order.get("delivery_lat") is not None:
@@ -144,7 +150,7 @@ def _format_delivery_context(order: dict | None) -> str:
             f"Delivery location received. Delivery fee: {config.CURRENCY} {order['delivery_fee']:.2f}, "
             f"Total: {config.CURRENCY} {order['total']:.2f}"
         )
-    return "(Delivery-or-pickup not yet decided, or delivery location not yet shared.)"
+    return "(Delivery-vs-pickup-vs-dine-in not yet decided, or delivery location not yet shared.)"
 
 
 def _format_saved_address_context(customer: dict | None) -> str:
@@ -226,9 +232,13 @@ def detect_confirmation_intent(message: str) -> str | None:
 
 
 def detect_delivery_preference(message: str) -> str | None:
-    """Returns 'delivery', 'pickup', or None - used to detect the customer's
-    answer to the delivery-or-pickup question."""
+    """Returns 'delivery', 'pickup', 'dine_in', or None - used to detect the
+    customer's answer to the delivery/pickup/dine-in question. Checked in
+    this order since "dine in" and "pickup" phrasing don't overlap but both
+    should be checked before the broader "delivery" match."""
     lowered = message.strip().lower()
+    if any(word in lowered for word in DINE_IN_WORDS):
+        return "dine_in"
     if any(word in lowered for word in PICKUP_WORDS):
         return "pickup"
     if any(word in lowered for word in DELIVERY_WORDS):

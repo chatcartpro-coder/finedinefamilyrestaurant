@@ -193,6 +193,34 @@ def orders_page(request: Request, admin=Depends(get_current_admin), start: str =
     )
 
 
+@router.get("/orders/latest-id")
+def orders_latest_id(admin=Depends(get_current_admin)):
+    """Baseline for the dashboard's live new-order poll (see base.html) -
+    called once on page load so the alert only fires for orders confirmed
+    AFTER the admin opened the dashboard, not every pre-existing one."""
+    return {"latest_id": store.get_latest_order_id()}
+
+
+@router.get("/orders/new")
+def orders_new_since(since: int = 0, admin=Depends(get_current_admin)):
+    """Polled every few seconds by the dashboard's live alert JS (base.html)
+    - returns any orders confirmed after `since` so the popup+beep can show
+    order #, type (delivery/pickup/dine-in), and total for each."""
+    new_orders = store.get_orders_since(since)
+    return {
+        "latest_id": max([o["id"] for o in new_orders], default=since),
+        "orders": [
+            {
+                "id": o["id"],
+                "order_type": store.order_type_label(o),
+                "total": o["total"],
+                "phone": o["phone"],
+            }
+            for o in new_orders
+        ],
+    }
+
+
 # ---- Catalog (menu) ----
 
 @router.get("/catalog", response_class=HTMLResponse)
@@ -338,9 +366,9 @@ def analytics_export(admin=Depends(get_current_admin), start: str = "", end: str
         ws3.column_dimensions[col_letter].width = width
 
     ws4 = wb.create_sheet("Orders")
-    ws4.append(["Order ID", "Phone", "Status", "Pickup", "Delivery Agent", "Subtotal", "Delivery Fee", "Discount Offer ID", "Total", "Created (UTC)", "Confirmed (UTC)"])
+    ws4.append(["Order ID", "Phone", "Status", "Order Type", "Delivery Agent", "Subtotal", "Delivery Fee", "Discount Offer ID", "Total", "Created (UTC)", "Confirmed (UTC)"])
     for o in store.get_orders(start, end):
-        ws4.append([o["id"], o["phone"], o["status"], "Yes" if o["is_pickup"] else "No", o["delivery_agent_phone"], o["subtotal"], o["delivery_fee"], o["discount_applied"], o["total"], o["created_at"], o["confirmed_at"]])
+        ws4.append([o["id"], o["phone"], o["status"], store.order_type_label(o), o["delivery_agent_phone"], o["subtotal"], o["delivery_fee"], o["discount_applied"], o["total"], o["created_at"], o["confirmed_at"]])
     for col_letter, width in zip("ABCDEFGHIJK", [10, 16, 14, 8, 16, 12, 12, 14, 12, 26, 26]):
         ws4.column_dimensions[col_letter].width = width
 

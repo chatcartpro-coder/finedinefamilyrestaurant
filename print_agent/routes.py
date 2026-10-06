@@ -36,15 +36,24 @@ def printer_config(_=Depends(require_print_agent_token)):
 
 
 def _serialize_order(order: dict) -> dict:
+    from config import vat_breakdown
+
     items = store.get_order_items(order["id"])
+    customer = store.get_customer(order["phone"])
+    excl_vat, vat_amount = vat_breakdown(order["total"])
     return {
         "id": order["id"],
         "phone": order["phone"],
+        "customer_name": customer.get("name") if customer else None,
         "confirmed_at": order["confirmed_at"],
+        "order_type": order.get("order_type"),
+        "order_type_label": store.order_type_label(order),
         "subtotal": order["subtotal"],
         "delivery_fee": order["delivery_fee"],
         "discount_applied": order["discount_applied"],
         "total": order["total"],
+        "amount_excl_vat": excl_vat,
+        "vat_amount": vat_amount,
         "delivery_address_text": order["delivery_address_text"],
         "delivery_lat": order["delivery_lat"],
         "delivery_lng": order["delivery_lng"],

@@ -10,6 +10,18 @@
 </head>
 <body>
 {% import "partials/icons.html" as icons %}
+
+<div class="new-order-banner" id="newOrderBanner">
+  <div>
+    <div class="text" id="newOrderText">New order received!</div>
+    <div class="sub" id="newOrderSub"></div>
+  </div>
+  <div class="actions">
+    <button type="button" onclick="window.location.href='/admin/orders'">View orders</button>
+    <button type="button" class="dismiss" onclick="document.getElementById('newOrderBanner').classList.remove('open')">&times;</button>
+  </div>
+</div>
+
 <div class="app-shell">
 
   <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
@@ -83,6 +95,96 @@
   function close() { sidebar.classList.remove('open'); backdrop.classList.remove('open'); }
   toggle.addEventListener('click', open);
   backdrop.addEventListener('click', close);
+})();
+</script>
+
+<script>
+(function () {
+  // Live new-order alert: polls /admin/orders/new every few seconds for
+  // orders confirmed after the last one we've seen, and on finding any,
+  // shows a top-of-screen banner + plays a beep (Web Audio API - no audio
+  // file to host/manage). "Last seen" is persisted in localStorage so it
+  // survives page navigation/reloads within this browser, and is first
+  // initialized from /admin/orders/latest-id so existing orders never
+  // trigger the alert the moment the dashboard is opened.
+  var POLL_INTERVAL_MS = 8000;
+  var STORAGE_KEY = 'chatcartpro_last_seen_order_id';
+
+  function getLastSeen() {
+    var v = parseInt(localStorage.getItem(STORAGE_KEY), 10);
+    return isNaN(v) ? null : v;
+  }
+  function setLastSeen(id) {
+    try { localStorage.setItem(STORAGE_KEY, String(id)); } catch (e) { /* storage unavailable, ignore */ }
+  }
+
+  function beep() {
+    try {
+      var AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      var ctx = new AudioCtx();
+      // Two short rising tones, like a simple register "ding-ding".
+      [880, 1175].forEach(function (freq, i) {
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        var start = ctx.currentTime + i * 0.18;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.3, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.start(start); osc.stop(start + 0.18);
+      });
+    } catch (e) { /* audio blocked (e.g. no user interaction yet) - alert still shows visually */ }
+  }
+
+  function showBanner(orders) {
+    var banner = document.getElementById('newOrderBanner');
+    var text = document.getElementById('newOrderText');
+    var sub = document.getElementById('newOrderSub');
+    if (!banner || !text || !sub) return;
+    if (orders.length === 1) {
+      text.textContent = 'New order #' + orders[0].id + ' received!';
+      sub.textContent = orders[0].order_type + ' - {{ currency }} ' + orders[0].total.toFixed(2);
+    } else {
+      text.textContent = orders.length + ' new orders received!';
+      sub.textContent = orders.map(function (o) { return '#' + o.id; }).join(', ');
+    }
+    banner.classList.add('open');
+    beep();
+  }
+
+  function poll(lastSeen) {
+    fetch('/admin/orders/new?since=' + lastSeen, { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) return;
+        if (data.orders && data.orders.length > 0) {
+          showBanner(data.orders);
+        }
+        setLastSeen(data.latest_id);
+        setTimeout(function () { poll(data.latest_id); }, POLL_INTERVAL_MS);
+      })
+      .catch(function () {
+        // Network hiccup - just retry on the next interval rather than stopping polling entirely.
+        setTimeout(function () { poll(lastSeen); }, POLL_INTERVAL_MS);
+      });
+  }
+
+  var lastSeen = getLastSeen();
+  if (lastSeen !== null) {
+    poll(lastSeen);
+  } else {
+    fetch('/admin/orders/latest-id', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        var baseline = data ? data.latest_id : 0;
+        setLastSeen(baseline);
+        poll(baseline);
+      })
+      .catch(function () { /* give up silently - alert just won't fire until next page load */ });
+  }
 })();
 </script>
 {% block extra_scripts %}{% endblock %}

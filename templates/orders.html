@@ -40,7 +40,11 @@
           {{ "%g"|format(it.qty) }}&times; {{ it.item_name_snapshot }}{{ ", " if not loop.last }}
         {% else %}<span class="muted">-</span>{% endfor %}
       </td>
-      <td>{% if o.is_pickup %}<span class="badge badge-grey">Pickup</span>{% else %}<span class="badge badge-blue">Delivery</span>{% endif %}</td>
+      <td>
+        {% if o.order_type == 'dine_in' %}<span class="badge badge-amber">Dine-in</span>
+        {% elif o.order_type == 'pickup' or o.is_pickup %}<span class="badge badge-grey">Takeaway</span>
+        {% else %}<span class="badge badge-blue">Delivery</span>{% endif %}
+      </td>
       <td>{{ o.delivery_agent_phone or "-" }}</td>
       <td>{{ currency }} {{ "%.2f"|format(o.subtotal) }}</td>
       <td>{{ currency }} {{ "%.2f"|format(o.delivery_fee) }}</td>

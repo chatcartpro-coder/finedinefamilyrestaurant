@@ -463,23 +463,29 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
         # (e.g. "can you add a drink too") but keep status as-is; it stays
         # awaiting_confirmation until an explicit confirm/cancel arrives.
 
-    # Once there's an order with items and no delivery-vs-pickup decision
-    # yet (or delivery was chosen but no address - by location OR text -
-    # has landed): a "pickup" reply short-circuits straight to final
-    # confirmation (no location needed); a "yes, same address" reply reuses
-    # the customer's saved location instead of waiting for a fresh share; a
-    # message that reads like a typed address is accepted directly as the
-    # delivery address text, no coordinates required. Anything else
-    # (including "delivery") falls through to the normal AI reply below,
-    # whose system prompt already knows to ask for/confirm a delivery
-    # address (by location or text).
+    # Once there's an order with items and no delivery/pickup/dine-in
+    # decision yet (or delivery was chosen but no address - by location OR
+    # text - has landed): a "pickup" or "dine in" reply short-circuits
+    # straight to final confirmation (no location needed either way); a
+    # "yes, same address" reply reuses the customer's saved location instead
+    # of waiting for a fresh share; a message that reads like a typed
+    # address is accepted directly as the delivery address text, no
+    # coordinates required. Anything else (including "delivery") falls
+    # through to the normal AI reply below, whose system prompt already
+    # knows to ask for/confirm a delivery address (by location or text).
     needs_delivery_address = (
         order and store.get_order_items(order["id"]) and not order.get("is_pickup")
         and order.get("delivery_lat") is None and not order.get("delivery_address_text")
     )
     if needs_delivery_address:
-        if detect_delivery_preference(text) == "pickup":
+        preference = detect_delivery_preference(text)
+        if preference == "pickup":
             store.set_order_pickup(order["id"])
+            order = store.get_order(order["id"])
+            _prompt_final_confirmation(phone, order)
+            return
+        if preference == "dine_in":
+            store.set_order_dine_in(order["id"])
             order = store.get_order(order["id"])
             _prompt_final_confirmation(phone, order)
             return
@@ -508,13 +514,20 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
 
 
 def _prompt_final_confirmation(phone: str, order: dict):
+    """Used for both pickup and dine-in - same no-delivery-fee flow, just a
+    different synthetic "customer message" fed to the AI and a different
+    escalation-note label, driven by order_type (set by set_order_pickup/
+    set_order_dine_in right before this is called)."""
     items = store.get_order_items(order["id"])
     store.set_order_status(order["id"], "awaiting_confirmation")
-    reply = generate_reply("I'll pick it up myself.", order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
+    is_dine_in = order.get("order_type") == "dine_in"
+    synthetic_message = "I'll dine in at the restaurant." if is_dine_in else "I'll pick it up myself."
+    label = "dine-in - no delivery fee" if is_dine_in else "pickup - no delivery fee"
+    reply = generate_reply(synthetic_message, order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
     escalation_note = ""
     if "confirm" not in reply.lower():
         escalation_note = (
-            f"\n\nTotal: {config.CURRENCY} {order['total']:.2f} (pickup - no delivery fee). "
+            f"\n\nTotal: {config.CURRENCY} {order['total']:.2f} ({label}). "
             "Reply CONFIRM to place this order or CANCEL to change it."
         )
     _send(phone, reply + escalation_note)
@@ -598,8 +611,12 @@ def _apply_cart_updates(phone: str, text: str, order: dict | None):
 
 def _format_whatsapp_receipt(order: dict, items: list) -> str:
     """Itemized order confirmation, sent to the customer over WhatsApp the
-    moment their order is confirmed."""
-    lines = [f"{config.STORE_NAME}", f"Order #{order['id']} - confirmed", ""]
+    moment their order is confirmed. Prices are VAT-inclusive (see
+    config.vat_breakdown) - the total never changes, this just breaks the
+    VAT amount back out for the customer's records."""
+    from config import vat_breakdown
+
+    lines = [f"{config.STORE_NAME}", f"Order #{order['id']} - confirmed", f"Order type: {store.order_type_label(order)}", ""]
 
     for item in items:
         qty = item["qty"]
@@ -614,8 +631,13 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
     if order.get("discount_applied"):
         lines.append("Discount applied")
     lines.append(f"Total: {config.CURRENCY} {order['total']:.2f}")
+    excl_vat, vat_amount = vat_breakdown(order["total"])
+    lines.append(f"(incl. VAT {config.CURRENCY} {vat_amount:.2f} - amount excl. VAT: {config.CURRENCY} {excl_vat:.2f})")
 
-    if order.get("is_pickup"):
+    if order.get("order_type") == "dine_in":
+        lines.append("")
+        lines.append("This is a dine-in order - please head to the restaurant, your order will be prepared for you.")
+    elif order.get("is_pickup"):
         lines.append("")
         lines.append("This is a pickup order - please collect it from the restaurant.")
     elif order.get("delivery_address_text"):
