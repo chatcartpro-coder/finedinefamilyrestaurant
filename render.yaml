@@ -29,7 +29,7 @@ services:
       - key: OPENROUTER_MODEL
         value: google/gemma-4-26b-a4b-it:free
       - key: OPENROUTER_FALLBACK_MODELS
-        value: "meta-llama/llama-3.3-70b-instruct:free,mistralai/mistral-small-3.2-24b-instruct:free,qwen/qwen-2.5-72b-instruct:free,google/gemini-2.0-flash-001"
+        value: "nvidia/nemotron-3-super:free,thinkingmachines/inkling-small:free,google/gemma-4-31b-it:free,nvidia/nemotron-3-nano-omni:free,google/gemini-2.0-flash-001"
       - key: OPENROUTER_VISION_MODEL
         sync: false
       - key: WHISPER_API_KEY

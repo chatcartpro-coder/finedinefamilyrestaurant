@@ -39,17 +39,24 @@ class Config:
     # Free-tier (":free") model slugs on OpenRouter change often - one
     # getting retired/promoted to paid shows up as a 404, which
     # ai/openrouter_client.py treats as retryable (falls through to the next
-    # model) rather than failing the whole reply outright. The last entry is
-    # a cheap PAID model (not a ":free" slug) as a guaranteed-available
-    # safety net, since free slugs can vanish without notice but a paid
-    # model billed against OPENROUTER_API_KEY's balance won't 404 like this.
+    # model) rather than failing the whole reply outright. Picked from
+    # OpenRouter's current (as of checking) free-model list, favoring
+    # general-purpose instruction-tuned/conversational models spread across
+    # different providers (so one provider's outage/rate-limit doesn't take
+    # several chain entries down at once) over coding-specialized or
+    # non-chat (embedding/rerank/safety-classifier/TTS) models, which can't
+    # serve this chat_completion() call at all. The last entry is a cheap
+    # PAID model (not a ":free" slug) as a guaranteed-available safety net,
+    # since free slugs can vanish without notice but a paid model billed
+    # against OPENROUTER_API_KEY's balance won't 404 like this.
     # Override via a comma-separated OPENROUTER_FALLBACK_MODELS env var.
     OPENROUTER_FALLBACK_MODELS = [
         m.strip() for m in os.getenv(
             "OPENROUTER_FALLBACK_MODELS",
-            "meta-llama/llama-3.3-70b-instruct:free,"
-            "mistralai/mistral-small-3.2-24b-instruct:free,"
-            "qwen/qwen-2.5-72b-instruct:free,"
+            "nvidia/nemotron-3-super:free,"
+            "thinkingmachines/inkling-small:free,"
+            "google/gemma-4-31b-it:free,"
+            "nvidia/nemotron-3-nano-omni:free,"
             "google/gemini-2.0-flash-001",
         ).split(",") if m.strip()
     ]
