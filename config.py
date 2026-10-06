@@ -34,6 +34,22 @@ class Config:
     OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL") or OPENROUTER_MODEL
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+    # Fallback chain for text replies - tried in order after OPENROUTER_MODEL
+    # if a call fails (rate limit, provider outage, etc). Spread across
+    # different free-tier providers so one provider's outage doesn't take
+    # all of them down, with one cheap paid model as the last-resort safety
+    # net (OPENROUTER_API_KEY still gates whether any of this runs at all).
+    # Override via a comma-separated OPENROUTER_FALLBACK_MODELS env var.
+    OPENROUTER_FALLBACK_MODELS = [
+        m.strip() for m in os.getenv(
+            "OPENROUTER_FALLBACK_MODELS",
+            "meta-llama/llama-3.3-70b-instruct:free,"
+            "mistralai/mistral-small-3.2-24b-instruct:free,"
+            "qwen/qwen-2.5-72b-instruct:free,"
+            "google/gemini-2.0-flash-001",
+        ).split(",") if m.strip()
+    ]
+
     # Voice transcription (Groq's Whisper endpoint by default - fast, free-tier
     # friendly, OpenAI-compatible. Swap to OpenAI's whisper-1 by changing
     # WHISPER_BASE_URL/WHISPER_API_KEY/WHISPER_MODEL - ai/voice.py doesn't
