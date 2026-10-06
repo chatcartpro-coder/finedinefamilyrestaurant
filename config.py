@@ -46,9 +46,12 @@ class Config:
     # several chain entries down at once) over coding-specialized or
     # non-chat (embedding/rerank/safety-classifier/TTS) models, which can't
     # serve this chat_completion() call at all. The last entry is a cheap
-    # PAID model (not a ":free" slug) as a guaranteed-available safety net,
-    # since free slugs can vanish without notice but a paid model billed
-    # against OPENROUTER_API_KEY's balance won't 404 like this.
+    # PAID model as a guaranteed-available safety net, since free slugs can
+    # vanish without notice but a paid model billed against
+    # OPENROUTER_API_KEY's balance won't 404 like this - uses OpenRouter's
+    # self-updating "~google/gemini-flash-latest" alias rather than a dated
+    # version string (e.g. gemini-2.0-flash-001), since dated slugs are
+    # exactly what just broke here when that version was deprecated.
     # Override via a comma-separated OPENROUTER_FALLBACK_MODELS env var.
     OPENROUTER_FALLBACK_MODELS = [
         m.strip() for m in os.getenv(
@@ -57,7 +60,7 @@ class Config:
             "thinkingmachines/inkling-small:free,"
             "google/gemma-4-31b-it:free,"
             "nvidia/nemotron-3-nano-omni:free,"
-            "google/gemini-2.0-flash-001",
+            "~google/gemini-flash-latest",
         ).split(",") if m.strip()
     ]
 
