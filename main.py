@@ -589,13 +589,30 @@ def _push_invoice_best_effort(order: dict, items: list):
         logger.exception("Billing invoice push failed for order #%s (non-fatal)", order["id"])
 
 
+_UNIT_WORDS = {"x", "pcs", "pc", "piece", "pieces", "plate", "plates", "no", "nos", "qty"}
+
+
 def _apply_cart_updates(phone: str, text: str, order: dict | None):
     """Very lightweight structured extraction: looks for 'qty item' patterns
     in the customer's message and adds matching in-stock menu items to the
     active (or new) draft order. Deliberately simple for v1 - a
     structured-JSON OpenRouter call is the natural upgrade path here since
     free-text orders (especially with half/full size choices) are far more
-    variable than this regex covers."""
+    variable than this regex covers.
+
+    This only ever fires on a message written (at least partly) in Latin
+    script - item names in this menu are all Latin/English, so a message in
+    another script (e.g. Tamil "அப்பம் 2 pcs") can't name a real dish in a
+    way this regex can see. Previously, the digit+optional-unit-word part of
+    such a message (e.g. just "2 pcs" surviving after the non-Latin dish
+    name was skipped) could itself match the regex, with "pcs" captured as
+    the item phrase and matched via substring search against unrelated menu
+    items whose name happens to contain "pcs" (e.g. "Dinner Meal (3pcs)") -
+    confirmed live. Adding an item from a bare unit word, or from a phrase
+    too short/generic to plausibly name a specific dish, is now rejected
+    outright; the AI's own cart summary (shown in every reply) is the
+    source of truth for what's actually in the order, this regex is only a
+    best-effort assist for the common "2 biryani" case."""
     matches = re.findall(r"(\d+(?:\.\d+)?)\s*(?:x|pcs|pieces|plate|plates)?\s*([a-zA-Z][a-zA-Z\s]{2,40})", text)
     if not matches:
         return
@@ -604,6 +621,16 @@ def _apply_cart_updates(phone: str, text: str, order: dict | None):
         item_phrase = item_phrase.strip()
         if not item_phrase:
             continue
+        # Reject a bare unit word (e.g. "pcs", "plate") as the item name -
+        # it's leftover regex noise, never an actual dish, and must not be
+        # used as a catalog search query (see docstring).
+        if item_phrase.lower() in _UNIT_WORDS:
+            continue
+        # Reject anything too short to plausibly identify a specific dish -
+        # guards against other short/generic fragments matching unrelated
+        # items by coincidental substring overlap.
+        if len(item_phrase) < 4:
+            continue
         try:
             qty = float(qty_str)
         except ValueError:
@@ -611,11 +638,30 @@ def _apply_cart_updates(phone: str, text: str, order: dict | None):
         if qty <= 0:
             continue
 
-        candidates = search_catalog_for_message(item_phrase, top_k=1)
+        # Pull several candidates rather than just one - search_catalog_for_
+        # message's word-by-word fallback returns whatever it finds first
+        # per word, not the best overall match (confirmed live: "chicken
+        # biryani" returned "Afghani Chicken (Full)" as candidate #1, since
+        # "chicken" alone was searched before "biryani"). Score every
+        # candidate by real word overlap with what the customer typed and
+        # keep the best one, instead of trusting result order.
+        candidates = search_catalog_for_message(item_phrase, top_k=8)
         if not candidates:
             continue
-        item = candidates[0]
+        phrase_words = {w for w in item_phrase.lower().split() if len(w) >= 3}
+
+        def _overlap(candidate):
+            item_words = {w.strip("()") for w in candidate["name"].lower().split() if len(w) >= 3}
+            return len(phrase_words & item_words)
+
+        item = max(candidates, key=_overlap)
         if not item["in_stock"]:
+            continue
+        # Require the matched item's name to actually share a real word with
+        # what the customer typed, not just an arbitrary substring - e.g.
+        # "pcs" inside "Dinner Meal (3pcs)" would still fail this since
+        # "pcs" isn't a standalone word in the item name's word-split form.
+        if phrase_words and _overlap(item) == 0:
             continue
 
         if not order or order["status"] not in ("draft", "awaiting_confirmation"):
