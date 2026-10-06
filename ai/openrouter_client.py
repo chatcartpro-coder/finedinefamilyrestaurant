@@ -16,10 +16,13 @@ class OpenRouterError(Exception):
 
 
 # Failures worth retrying on the next model in the fallback chain: rate
-# limits, upstream provider/server errors, and a request that timed out or
-# came back empty - these say "this model/provider is having a bad moment",
-# not "this request is malformed" (which would fail identically everywhere).
-_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+# limits, upstream provider/server errors, a request that timed out or came
+# back empty, and "model not found/unavailable" - OpenRouter's free-model
+# lineup changes often (slugs get retired/promoted to paid with little
+# notice), so a 404 here usually means "this specific model slug is gone",
+# not "this request is malformed" (which would fail identically everywhere
+# and isn't itself a model slug problem).
+_RETRYABLE_STATUS_CODES = {404, 429, 500, 502, 503, 504}
 
 
 def _call_model(messages, model: str, temperature: float, max_tokens: int) -> str:

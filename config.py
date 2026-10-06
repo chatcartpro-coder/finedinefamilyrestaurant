@@ -35,10 +35,14 @@ class Config:
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
     # Fallback chain for text replies - tried in order after OPENROUTER_MODEL
-    # if a call fails (rate limit, provider outage, etc). Spread across
-    # different free-tier providers so one provider's outage doesn't take
-    # all of them down, with one cheap paid model as the last-resort safety
-    # net (OPENROUTER_API_KEY still gates whether any of this runs at all).
+    # if a call fails (rate limit, provider outage, model retired, etc).
+    # Free-tier (":free") model slugs on OpenRouter change often - one
+    # getting retired/promoted to paid shows up as a 404, which
+    # ai/openrouter_client.py treats as retryable (falls through to the next
+    # model) rather than failing the whole reply outright. The last entry is
+    # a cheap PAID model (not a ":free" slug) as a guaranteed-available
+    # safety net, since free slugs can vanish without notice but a paid
+    # model billed against OPENROUTER_API_KEY's balance won't 404 like this.
     # Override via a comma-separated OPENROUTER_FALLBACK_MODELS env var.
     OPENROUTER_FALLBACK_MODELS = [
         m.strip() for m in os.getenv(
@@ -90,6 +94,12 @@ class Config:
     DELIVERY_FEE = float(os.getenv("DELIVERY_FEE", "10"))
     FREE_DELIVERY_THRESHOLD = float(os.getenv("FREE_DELIVERY_THRESHOLD", "100"))
     CURRENCY = os.getenv("CURRENCY", "AED")
+
+    # VAT - menu prices are VAT-inclusive (the customer-facing total never
+    # changes), this is only used to break the VAT amount back out of an
+    # already-VAT-inclusive total for receipts/compliance. UAE standard
+    # rate is 5%.
+    VAT_RATE = float(os.getenv("VAT_RATE", "5")) / 100
 
     PORT = int(os.getenv("PORT", "8000"))
 
@@ -150,3 +160,12 @@ def apply_whatsapp_connection_override():
     config.WHATSAPP_PHONE_NUMBER_ID = conn["phone_number_id"]
     if conn.get("waba_id"):
         config.WHATSAPP_BUSINESS_ACCOUNT_ID = conn["waba_id"]
+
+
+def vat_breakdown(vat_inclusive_total: float) -> tuple[float, float]:
+    """Splits an already-VAT-inclusive total into (amount_excl_vat, vat_amount)
+    for receipt display - menu prices already include VAT, so this never
+    changes what the customer pays, it just shows the breakdown. Standard
+    inclusive-VAT formula: vat = total * rate / (1 + rate)."""
+    vat_amount = round(vat_inclusive_total * config.VAT_RATE / (1 + config.VAT_RATE), 2)
+    return round(vat_inclusive_total - vat_amount, 2), vat_amount
