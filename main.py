@@ -19,7 +19,7 @@ from admin.temp_reset import router as temp_reset_router  # TEMP: remove after u
 from ai.agent import (
     compute_delivery_fee, detect_confirmation_intent, detect_delivery_preference,
     detect_probable_address, detect_reuse_saved_address, generate_image_reply, generate_reply,
-    search_catalog_for_message,
+    is_accepting_orders, operating_hours_label, search_catalog_for_message,
 )
 from ai.voice import TranscriptionError, transcribe
 from catalog import store as catalog_store
@@ -170,6 +170,19 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.info("Skipping already-processed message_id=%s (Meta retry)", message_id)
         return {"status": "duplicate_ignored"}
     store.mark_processed(message_id)
+
+    # Meta sends the customer's own WhatsApp profile name alongside every
+    # message (value.contacts[0].profile.name) - capture it for free so the
+    # AI can greet returning customers by name without ever having to ask,
+    # same as the saved-address flow. upsert_customer's COALESCE means this
+    # never overwrites an existing name with a missing one.
+    profile_name = None
+    try:
+        profile_name = value["contacts"][0]["profile"]["name"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    if profile_name:
+        store.upsert_customer(from_number, name=profile_name)
 
     if msg_type == "text":
         text = message.get("text", {}).get("body", "").strip()
@@ -453,6 +466,14 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
     if order and order["status"] == "awaiting_confirmation":
         intent = detect_confirmation_intent(text)
         if intent == "confirm":
+            if not is_accepting_orders():
+                _send(
+                    phone,
+                    f"Sorry, {config.STORE_NAME} isn't accepting orders right now - we're open "
+                    f"{operating_hours_label()}. Your order is saved; just reply CONFIRM once we're open "
+                    "and I'll place it for you!",
+                )
+                return
             _confirm_order(phone, order)
             return
         if intent == "cancel":

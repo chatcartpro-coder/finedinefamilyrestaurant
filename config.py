@@ -100,6 +100,17 @@ class Config:
     # dinner/etc.) for AI recommendations - defaults to UTC if unset.
     STORE_TIMEZONE = os.getenv("STORE_TIMEZONE", "UTC")
 
+    # Operating hours (24h local time, STORE_TIMEZONE) - orders are only
+    # accepted between STORE_OPEN_HOUR and STORE_CLOSE_HOUR. A close hour
+    # past midnight (e.g. 2 for 2 AM) is treated as "the next day" - see
+    # main.py's is_within_operating_hours(). The order cutoff is
+    # STORE_ORDER_CUTOFF_MINUTES before close, for ALL order types
+    # (delivery/pickup/dine-in) - not just delivery, since kitchen prep time
+    # applies regardless of how the order leaves the restaurant.
+    STORE_OPEN_HOUR = int(os.getenv("STORE_OPEN_HOUR", "8"))
+    STORE_CLOSE_HOUR = int(os.getenv("STORE_CLOSE_HOUR", "2"))
+    STORE_ORDER_CUTOFF_MINUTES = int(os.getenv("STORE_ORDER_CUTOFF_MINUTES", "30"))
+
     # Delivery pricing
     DELIVERY_FEE = float(os.getenv("DELIVERY_FEE", "10"))
     FREE_DELIVERY_THRESHOLD = float(os.getenv("FREE_DELIVERY_THRESHOLD", "100"))

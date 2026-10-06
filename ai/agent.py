@@ -55,6 +55,9 @@ ramble.
 
 Rules:
 - Always be warm, polite, and respectful, even if the customer is short, impatient, or frustrated.
+- If the customer's name is known (see "Customer name" below), greet/address them by it naturally once near the \
+start of the conversation (e.g. "Welcome back, {{name}}!") - never ask for their name, WhatsApp already provides it. \
+If it's not known, don't ask for it either; just proceed without using a name.
 - Always reply in the same language the customer is writing in (e.g. Arabic, Hindi, Malayalam, English) - if they \
 switch languages mid-conversation, switch with them. Menu item names and prices stay as listed regardless of \
 language.
@@ -80,6 +83,10 @@ reason to order it (e.g. "it's one of our most popular biryanis") - never invent
 from the menu, and never be pushy about it.
 - Keep a running mental order as the customer adds items; when you list it, list each item with qty, unit price, \
 and line total.
+- Check "Operating hours" below before moving toward checkout. If it says CLOSED, you can still discuss the menu \
+and build up their order, but tell them plainly (once, don't repeat every message) that we're currently closed and \
+state the hours - never present a final total or ask for CONFIRM while closed. If they're browsing while closed, \
+let them know their order will be saved and they can confirm once we reopen.
 - Once the customer seems finished ordering (e.g. "that's it", "checkout", "done"), ask whether this is for \
 DELIVERY, PICKUP (takeaway), or DINE-IN if not already stated.
   - For pickup or dine-in: no location needed, no delivery fee - go straight to the final itemized total. For \
@@ -98,12 +105,17 @@ confirmed address if delivery), present the final itemized order: items, subtota
 dine-in), and total in {currency}. All menu prices already include VAT - never add VAT on top or mention it unless \
 the customer specifically asks, in which case note that prices are VAT-inclusive. End that message by asking the \
 customer to reply CONFIRM to place the order or CANCEL to change it. Always phrase it this way so the system can \
-detect the reply. Move toward this final confirmation efficiently once the cart, delivery/pickup/dine-in choice, and \
-address (if needed) are all settled - don't ask further clarifying questions once nothing is actually ambiguous, and \
-don't linger once you have what you need.
+detect the reply. Accept every order the customer wants to place, regardless of size - never refuse or discourage an \
+order. Move toward this final confirmation as quickly as possible once the cart, delivery/pickup/dine-in choice, and \
+address (if needed) are all settled - don't ask further clarifying questions once nothing is actually ambiguous, \
+don't repeat information already confirmed, and don't linger once you have what you need. Speed to checkout matters: \
+every extra message is friction for the customer.
 - Once an order's items are settled (customer seems done adding more), proactively suggest one or two popular \
 extras that pair well (e.g. a drink, a side, or a dessert) from the menu context if something relevant is shown - \
 but only once, and only from what's actually in the menu context, never invented. Don't push this into every reply.
+- If the customer seems ready to check out with a very small order (e.g. a single low-priced item), you may gently \
+mention that adding a side or drink makes for a fuller meal - but this is a soft, one-time suggestion only, never a \
+requirement, and never refuse or delay checkout if they decline. Accept whatever they order, however small.
 - If any active offers are listed below, mention the relevant one naturally when it applies to what the customer \
 is ordering (e.g. a percent-off deal that applies to their cart) - but only once per conversation, and only if \
 it's genuinely relevant, never forced into every reply.
@@ -127,9 +139,11 @@ Customer's current order:
 
 Order status: {order_status}
 Delivery info: {delivery_context}
+Customer name: {customer_name_context}
 Saved address: {saved_address_context}
 Active offers: {active_offers_context}
 Time of day: {time_of_day_context}
+Operating hours: {operating_hours_context}
 """
 
 
@@ -172,6 +186,12 @@ def _format_delivery_context(order: dict | None) -> str:
     return "(Delivery-vs-pickup-vs-dine-in not yet decided, or delivery location not yet shared.)"
 
 
+def _format_customer_name_context(customer: dict | None) -> str:
+    if customer and customer.get("name"):
+        return customer["name"]
+    return "(Not known yet - WhatsApp didn't provide a profile name for this customer.)"
+
+
 def _format_saved_address_context(customer: dict | None) -> str:
     if not customer:
         return "(No saved address for this customer yet.)"
@@ -199,12 +219,15 @@ def _format_offers_context(offers: list) -> str:
     return "\n".join(parts)
 
 
-def _current_daypart() -> str:
+def _now_local() -> datetime:
     try:
-        now_local = datetime.now(ZoneInfo(config.STORE_TIMEZONE))
+        return datetime.now(ZoneInfo(config.STORE_TIMEZONE))
     except Exception:
-        now_local = datetime.now()
-    hour = now_local.hour
+        return datetime.now()
+
+
+def _current_daypart() -> str:
+    hour = _now_local().hour
     if 5 <= hour < 11:
         return "breakfast (morning)"
     if 11 <= hour < 15:
@@ -216,8 +239,58 @@ def _current_daypart() -> str:
     return "late-night"
 
 
+def is_accepting_orders() -> bool:
+    """True if the restaurant is currently open AND before the order cutoff
+    (STORE_ORDER_CUTOFF_MINUTES before STORE_CLOSE_HOUR), for all order
+    types. STORE_CLOSE_HOUR < STORE_OPEN_HOUR means closing time is past
+    midnight (e.g. open 8, close 2 -> open 08:00 through 01:30 the next
+    "business day" with a 30-min cutoff)."""
+    now = _now_local()
+    open_minutes = config.STORE_OPEN_HOUR * 60
+    close_minutes = config.STORE_CLOSE_HOUR * 60
+    if close_minutes <= open_minutes:
+        close_minutes += 24 * 60  # closing time is past midnight
+    cutoff_minutes = close_minutes - config.STORE_ORDER_CUTOFF_MINUTES
+
+    now_minutes = now.hour * 60 + now.minute
+    # If we're in the "past midnight" portion of the business day (e.g. it's
+    # 01:00 and close is scheduled at 26:00/2 AM next-day-equivalent), shift
+    # "now" the same way so it compares on the same number line.
+    if now_minutes < open_minutes and close_minutes > 24 * 60:
+        now_minutes += 24 * 60
+
+    return open_minutes <= now_minutes < cutoff_minutes
+
+
+def operating_hours_label() -> str:
+    """Human-readable hours string for customer-facing messages, e.g.
+    "8:00 AM - 2:00 AM (last orders 1:30 AM)"."""
+    def fmt(total_minutes: int) -> str:
+        h, m = divmod(total_minutes % (24 * 60), 60)
+        period = "AM" if h < 12 else "PM"
+        display_h = h % 12 or 12
+        return f"{display_h}:{m:02d} {period}"
+
+    open_minutes = config.STORE_OPEN_HOUR * 60
+    close_minutes = config.STORE_CLOSE_HOUR * 60
+    if close_minutes <= open_minutes:
+        close_minutes += 24 * 60
+    cutoff_minutes = close_minutes - config.STORE_ORDER_CUTOFF_MINUTES
+    return f"{fmt(open_minutes)} - {fmt(close_minutes)} (last orders {fmt(cutoff_minutes)})"
+
+
 def _format_time_of_day_context() -> str:
     return f"It is currently {_current_daypart()} for the restaurant's local time."
+
+
+def _format_operating_hours_context() -> str:
+    if is_accepting_orders():
+        return f"Open now, accepting orders. Hours: {operating_hours_label()}."
+    return (
+        f"CLOSED right now (outside operating hours). Hours: {operating_hours_label()}. "
+        "Do not accept or confirm any order right now - tell the customer we're closed and when we reopen, "
+        "but you can still answer menu questions."
+    )
 
 
 def search_catalog_for_message(message: str, top_k: int = 8) -> list:
@@ -309,9 +382,11 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         cart_context=_format_cart_context(order, order_items),
         order_status=order["status"] if order else "no active order",
         delivery_context=_format_delivery_context(order),
+        customer_name_context=_format_customer_name_context(customer),
         saved_address_context=_format_saved_address_context(customer),
         active_offers_context=_format_offers_context(offers_store.get_active_offers()),
         time_of_day_context=_format_time_of_day_context(),
+        operating_hours_context=_format_operating_hours_context(),
     )
 
     messages = [{"role": "system", "content": system_prompt}]

@@ -48,6 +48,12 @@ services:
         sync: false
       - key: STORE_TIMEZONE
         value: Asia/Dubai
+      - key: STORE_OPEN_HOUR
+        value: "8"
+      - key: STORE_CLOSE_HOUR
+        value: "2"
+      - key: STORE_ORDER_CUTOFF_MINUTES
+        value: "30"
       - key: DELIVERY_FEE
         value: "0"
       - key: FREE_DELIVERY_THRESHOLD
