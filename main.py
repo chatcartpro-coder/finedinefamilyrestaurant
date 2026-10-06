@@ -64,6 +64,14 @@ def privacy_policy():
 
 
 @app.on_event("startup")
+def _log_openrouter_model_config():
+    logger.info(
+        "OpenRouter config: primary=%s fallbacks=%s",
+        config.OPENROUTER_MODEL, config.OPENROUTER_FALLBACK_MODELS,
+    )
+
+
+@app.on_event("startup")
 def _apply_store_settings_override():
     from config import apply_store_settings_override
     apply_store_settings_override()
