@@ -17,7 +17,7 @@ _local = threading.local()
 
 def _get_conn():
     if not hasattr(_local, "conn"):
-        os.makedirs(config.DATA_DIR, exist_ok=True)
+        os.makedirs(config.DB_DATA_DIR, exist_ok=True)
         _local.conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
         _local.conn.execute("PRAGMA foreign_keys = ON")
         _init_schema(_local.conn)

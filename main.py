@@ -77,9 +77,10 @@ def _apply_whatsapp_connection_override():
 
 @app.on_event("startup")
 def _auto_import_catalog_if_empty():
-    # Render's free tier disk is ephemeral - every deploy/restart wipes data/,
-    # so re-seed the menu from the bundled starter sheet if the DB is empty
-    # after a fresh deploy.
+    # Safety net for a brand-new/empty DB (e.g. Render's free web-service
+    # plan, which has no persistent disk at all - every deploy/restart wipes
+    # the filesystem). On a plan with a persistent disk (see render.yaml's
+    # `disk` + DB_DATA_DIR), this only fires once, on the very first boot.
     import os
     from catalog.excel_import import import_file
 

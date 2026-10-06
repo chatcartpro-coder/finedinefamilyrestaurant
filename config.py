@@ -80,7 +80,15 @@ class Config:
     # Paths
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     DATA_DIR = os.path.join(BASE_DIR, "data")
-    DB_PATH = os.path.join(DATA_DIR, "app.db")
+    # DB_DATA_DIR defaults to DATA_DIR (local dev: everything lives in ./data,
+    # alongside the bundled catalog_seed.xlsx). On Render, set DB_DATA_DIR to
+    # the mounted persistent disk's path (see render.yaml's `disk` block) -
+    # deliberately NOT the same path as DATA_DIR/catalog_seed.xlsx, since a
+    # disk mounted directly over ./data would shadow the git-committed seed
+    # file with an empty volume on first boot and the menu would never
+    # auto-import (see main.py's _auto_import_catalog_if_empty).
+    DB_DATA_DIR = os.getenv("DB_DATA_DIR") or DATA_DIR
+    DB_PATH = os.path.join(DB_DATA_DIR, "app.db")
     CATALOG_SEED_PATH = os.path.join(DATA_DIR, "catalog_seed.xlsx")
 
 
