@@ -42,6 +42,19 @@ def list_items(in_stock_only: bool = False):
     return [_row_to_dict(row) for row in cur.fetchall()]
 
 
+def list_categories(in_stock_only: bool = True) -> list:
+    """Distinct category names with at least one item, in stock-first/name
+    order - used as a fallback when a customer asks a generic "what's on the
+    menu?" question that doesn't match any specific dish by keyword (see
+    ai/agent.py's search_catalog_for_message), so the AI can list categories
+    instead of claiming nothing is available."""
+    _init_schema()
+    conn = _get_conn()
+    where = "WHERE category IS NOT NULL AND category != '' AND in_stock = 1 AND stock_qty > 0" if in_stock_only else "WHERE category IS NOT NULL AND category != ''"
+    cur = conn.execute(f"SELECT DISTINCT category FROM catalog_items {where} ORDER BY category")
+    return [row[0] for row in cur.fetchall()]
+
+
 def get_item(item_id: int):
     _init_schema()
     conn = _get_conn()

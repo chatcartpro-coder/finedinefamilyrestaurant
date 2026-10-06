@@ -39,6 +39,15 @@ ADDRESS_KEYWORDS = {
     "district", "sector", "house", "gate", "landmark",
 }
 
+# A generic "what do you have?" question names no specific dish, so the
+# keyword search in search_catalog_for_message legitimately finds nothing -
+# these phrases signal the customer wants an overview instead, which falls
+# back to listing categories rather than claiming the menu is unavailable.
+MENU_BROWSE_PHRASES = {
+    "menu", "what do you have", "whats on the menu", "what's on the menu",
+    "what can i order", "what do you serve", "show me the menu", "categories",
+}
+
 SYSTEM_PROMPT_TEMPLATE = """You are the WhatsApp ordering assistant for {store_name}, a restaurant. You help \
 customers order food using ONLY the menu items listed below - never invent a dish, price, or availability that \
 isn't in this list. Be concise (WhatsApp-length replies, a few short sentences). Be warm and appetizing, but don't \
@@ -50,6 +59,10 @@ Rules:
 switch languages mid-conversation, switch with them. Menu item names and prices stay as listed regardless of \
 language.
 - Only offer/confirm items that appear in the menu context below, using their exact listed price and unit.
+- If the menu context below lists categories instead of specific dishes (this happens when the customer asked a \
+general "what's on the menu" question rather than naming a dish), briefly list those categories and ask which one \
+interests them, or what dish they're in the mood for - don't claim the menu is unavailable, and don't invent dish \
+names or prices before the customer narrows it down.
 - Many dishes come in Half and Full sizes, listed as separate menu entries (e.g. "Butter Chicken (Half)" / "Butter \
 Chicken (Full)"). If a customer orders a dish that has both sizes in the menu context, ask which size they want \
 before adding it - never guess. If a dish only has one size listed, don't offer a choice that doesn't exist.
@@ -120,14 +133,20 @@ Time of day: {time_of_day_context}
 """
 
 
-def _format_catalog_context(items: list) -> str:
-    if not items:
-        return "(No matching menu items found for this query.)"
-    parts = []
-    for it in items:
-        availability = "available" if it["in_stock"] else "NOT AVAILABLE"
-        parts.append(f"- {it['name']}: {config.CURRENCY} {it['price']:.2f} - {availability}")
-    return "\n".join(parts)
+def _format_catalog_context(items: list, categories: list = None) -> str:
+    if items:
+        parts = []
+        for it in items:
+            availability = "available" if it["in_stock"] else "NOT AVAILABLE"
+            parts.append(f"- {it['name']}: {config.CURRENCY} {it['price']:.2f} - {availability}")
+        return "\n".join(parts)
+    if categories:
+        return (
+            "No specific dish matched this message, but here are the menu's categories - ask the customer "
+            "which one interests them, or what dish they'd like, rather than listing every item:\n"
+            + "\n".join(f"- {c}" for c in categories)
+        )
+    return "(No matching menu items found for this query.)"
 
 
 def _format_cart_context(order: dict | None, items: list) -> str:
@@ -272,11 +291,20 @@ def detect_probable_address(message: str) -> bool:
 
 def generate_reply(customer_message: str, order: dict | None, order_items: list, customer: dict | None = None, history: list = None) -> str:
     catalog_items = search_catalog_for_message(customer_message)
+    # A generic "what's on the menu?" question names no specific dish, so
+    # the keyword search above legitimately finds nothing - fall back to
+    # listing categories instead of telling the customer the menu is
+    # unavailable (see _format_catalog_context).
+    categories = None
+    if not catalog_items:
+        lowered = customer_message.strip().lower()
+        if any(phrase in lowered for phrase in MENU_BROWSE_PHRASES):
+            categories = catalog_store.list_categories()
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         store_name=config.STORE_NAME,
         currency=config.CURRENCY,
-        catalog_context=_format_catalog_context(catalog_items),
+        catalog_context=_format_catalog_context(catalog_items, categories),
         clarification_hints=get_clarification_hints(catalog_items),
         cart_context=_format_cart_context(order, order_items),
         order_status=order["status"] if order else "no active order",
