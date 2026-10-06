@@ -57,7 +57,7 @@
       <td>{{ o.phone }}</td>
       <td><span class="badge {{ b.get(o.status, 'badge-grey') }}">{{ o.status }}</span></td>
       <td>{{ currency }} {{ "%.2f"|format(o.total) }}</td>
-      <td>{{ (o.created_at or "")[:16].replace('T', ' ') }}</td>
+      <td>{{ o.created_at|local_time }}</td>
     </tr>
     {% else %}
     <tr><td colspan="5" class="muted">No orders in this range</td></tr>

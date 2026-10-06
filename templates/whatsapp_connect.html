@@ -32,7 +32,7 @@
         {% elif connection.history_sync_status == 'pending' %}<span class="badge badge-amber">In progress&hellip;</span>
         {% else %}<span class="muted">-</span>{% endif %}
       </td></tr>
-      <tr><td>Connected</td><td class="settings-value">{{ (connection.connected_at or "")[:16].replace('T', ' ') }}</td></tr>
+      <tr><td>Connected</td><td class="settings-value">{{ connection.connected_at|local_time }}</td></tr>
     </table>
     <form method="post" action="/admin/whatsapp/disconnect" style="margin-top:16px;" onsubmit="return confirm('Disconnect this WhatsApp number? The bot will stop sending/receiving until a new one is connected.');">
       <button class="btn btn-outline" type="submit">Disconnect</button>

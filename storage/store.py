@@ -864,14 +864,19 @@ def get_customers_summary(start: str = None, end: str = None):
         SELECT c.phone,
                COALESCE(cu.name, ''),
                COUNT(*) AS message_count,
-               MAX(c.created_at) AS last_message_at
+               MAX(c.created_at) AS last_message_at,
+               cu.last_location_label,
+               cu.last_address_text,
+               cu.last_lat,
+               cu.last_lng
         FROM conversations c
         LEFT JOIN customers cu ON cu.phone = c.phone
         WHERE 1=1 {where}
         GROUP BY c.phone
         ORDER BY last_message_at DESC
     """, params)
-    keys = ["phone", "name", "message_count", "last_message_at"]
+    keys = ["phone", "name", "message_count", "last_message_at",
+            "last_location_label", "last_address_text", "last_lat", "last_lng"]
     return [dict(zip(keys, row)) for row in cur.fetchall()]
 
 

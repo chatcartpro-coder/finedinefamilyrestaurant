@@ -27,7 +27,7 @@
         <td><a href="/admin/conversations?phone={{ c.phone }}&start={{ start }}&end={{ end }}">{{ c.phone }}</a></td>
         <td>{{ c.name or "-" }}</td>
         <td>{{ c.message_count }}</td>
-        <td>{{ c.last_message_at[:16].replace('T', ' ') }}</td>
+        <td>{{ c.last_message_at|local_time }}</td>
       </tr>
       {% else %}
       <tr><td colspan="4" class="muted">No customers in this range</td></tr>
@@ -42,7 +42,7 @@
       {% for m in transcript %}
       <div class="bubble {{ 'in' if m.direction == 'in' else 'out' }}">
         <div class="bubble-text">{{ m.message }}</div>
-        <div class="bubble-time">{{ m.created_at[:16].replace('T', ' ') }}</div>
+        <div class="bubble-time">{{ m.created_at|local_time }}</div>
       </div>
       {% else %}
       <p class="muted">No messages for this customer in the selected date range.</p>
@@ -114,7 +114,7 @@
               <td>#{{ o.id }}</td>
               <td>{{ o.status }}</td>
               <td>{{ currency }} {{ "%.2f"|format(o.total) }}</td>
-              <td>{{ (o.created_at or "")[:16].replace('T', ' ') }}</td>
+              <td>{{ o.created_at|local_time }}</td>
             </tr>
             {% endfor %}
           </table>

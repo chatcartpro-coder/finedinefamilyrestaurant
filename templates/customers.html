@@ -19,7 +19,7 @@
 <div class="panel">
   <h2>Customers ({{ customers|length }})</h2>
   <table>
-    <tr><th>Customer</th><th>Phone</th><th>Messages</th><th>Last active</th><th></th></tr>
+    <tr><th>Customer</th><th>Phone</th><th>Saved address</th><th>Messages</th><th>Last active</th><th></th></tr>
     {% for c in customers %}
     <tr>
       <td>
@@ -29,12 +29,19 @@
         </div>
       </td>
       <td>{{ c.phone }}</td>
+      <td>
+        {% if c.last_lat is not none %}
+          <a href="https://maps.google.com/?q={{ c.last_lat }},{{ c.last_lng }}" target="_blank">{{ c.last_location_label or "Map" }}</a>
+        {% elif c.last_address_text %}
+          {{ c.last_address_text }}
+        {% else %}<span class="muted">-</span>{% endif %}
+      </td>
       <td>{{ c.message_count }}</td>
-      <td>{{ c.last_message_at[:16].replace('T', ' ') }}</td>
+      <td>{{ c.last_message_at|local_time }}</td>
       <td><a class="btn btn-outline" href="/admin/conversations?phone={{ c.phone }}&start={{ start }}&end={{ end }}">View chat</a></td>
     </tr>
     {% else %}
-    <tr><td colspan="5" class="muted">No customers in this range</td></tr>
+    <tr><td colspan="6" class="muted">No customers in this range</td></tr>
     {% endfor %}
   </table>
 </div>

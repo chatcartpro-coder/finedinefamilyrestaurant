@@ -8,7 +8,7 @@ by the exception handler registered in main.py.
 import io
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
 from admin.auth import (
@@ -199,6 +199,30 @@ def orders_latest_id(admin=Depends(get_current_admin)):
     called once on page load so the alert only fires for orders confirmed
     AFTER the admin opened the dashboard, not every pre-existing one."""
     return {"latest_id": store.get_latest_order_id()}
+
+
+@router.get("/orders/{order_id}/print", response_class=HTMLResponse)
+def order_print_receipt(order_id: int, request: Request, admin=Depends(get_current_admin)):
+    """Thermal-receipt-styled page for the browser's native print dialog -
+    opened from the new-order alert banner's Print button (base.html) or
+    directly from the Orders page. Works with any printer the staff's
+    computer can already print to (the admin dashboard runs in the cloud,
+    so it can't talk to a local thermal printer directly - this is the
+    standard way a cloud app hands off to a local device)."""
+    from config import vat_breakdown
+
+    order = store.get_order(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    items = store.get_order_items(order_id)
+    customer = store.get_customer(order["phone"])
+    excl_vat, vat_amount = vat_breakdown(order["total"])
+    return render(
+        request, "order_print.html", active_page="orders", admin=admin,
+        order=order, items=items, customer=customer,
+        order_type_label=store.order_type_label(order),
+        amount_excl_vat=excl_vat, vat_amount=vat_amount,
+    )
 
 
 @router.get("/orders/new")

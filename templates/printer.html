@@ -31,7 +31,7 @@
       <div class="full"><button class="btn btn-primary" type="submit">Save printer settings</button></div>
     </form>
     {% if settings and settings.updated_at %}
-    <p class="muted" style="margin-top:12px;">Last updated: {{ settings.updated_at[:16].replace('T', ' ') }}</p>
+    <p class="muted" style="margin-top:12px;">Last updated: {{ settings.updated_at|local_time }}</p>
     {% endif %}
   </div>
 

@@ -4,7 +4,7 @@
 <div class="page-header">
   <div>
     <h1>Menu</h1>
-    <p>Menu items the WhatsApp AI grounds every reply in.{% if last_synced %} Last synced {{ last_synced[:16].replace('T', ' ') }}.{% endif %}</p>
+    <p>Menu items the WhatsApp AI grounds every reply in.{% if last_synced %} Last synced {{ last_synced|local_time }}.{% endif %}</p>
   </div>
   <div class="actions">
     <button class="btn btn-primary" type="button" onclick="document.getElementById('addItemModal').classList.add('open')">+ Add item</button>

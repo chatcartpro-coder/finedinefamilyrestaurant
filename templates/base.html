@@ -17,6 +17,7 @@
     <div class="sub" id="newOrderSub"></div>
   </div>
   <div class="actions">
+    <button type="button" id="newOrderPrintBtn" style="display:none;">Print</button>
     <button type="button" onclick="window.location.href='/admin/orders'">View orders</button>
     <button type="button" class="dismiss" onclick="document.getElementById('newOrderBanner').classList.remove('open')">&times;</button>
   </div>
@@ -143,6 +144,7 @@
     var banner = document.getElementById('newOrderBanner');
     var text = document.getElementById('newOrderText');
     var sub = document.getElementById('newOrderSub');
+    var printBtn = document.getElementById('newOrderPrintBtn');
     if (!banner || !text || !sub) return;
     if (orders.length === 1) {
       text.textContent = 'New order #' + orders[0].id + ' received!';
@@ -150,6 +152,16 @@
     } else {
       text.textContent = orders.length + ' new orders received!';
       sub.textContent = orders.map(function (o) { return '#' + o.id; }).join(', ');
+    }
+    // Print button opens a print-ready receipt for the most recent order in
+    // this batch (same tab-opening approach regardless of 1 vs several
+    // arriving at once - the admin can print the rest from the Orders page).
+    if (printBtn) {
+      var latestOrder = orders[orders.length - 1];
+      printBtn.style.display = '';
+      printBtn.onclick = function () {
+        window.open('/admin/orders/' + latestOrder.id + '/print', '_blank');
+      };
     }
     banner.classList.add('open');
     beep();
