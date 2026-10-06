@@ -36,14 +36,10 @@
       <a href="/admin/delivery-agents" class="{{ 'active' if active_page == 'delivery_agents' else '' }}"><span class="icon">{{ icons.icon("delivery") }}</span> Delivery Agents</a>
     </nav>
 
-    {# DEMO-ONLY: remove this nav item along with admin/test_chat.py before going live #}
-    <div class="section-label">Demo</div>
-    <nav>
-      <a href="/admin/test-chat" class="{{ 'active' if active_page == 'test_chat' else '' }}"><span class="icon">{{ icons.icon("conversations") }}</span> Test Chat</a>
-    </nav>
-
     <div class="section-label">General</div>
     <nav>
+      <a href="/admin/whatsapp" class="{{ 'active' if active_page == 'whatsapp' else '' }}"><span class="icon">{{ icons.icon("conversations") }}</span> WhatsApp</a>
+      <a href="/admin/whatsapp/templates" class="{{ 'active' if active_page == 'whatsapp_templates' else '' }}"><span class="icon">{{ icons.icon("conversations") }}</span> Message Templates</a>
       <a href="/admin/printer" class="{{ 'active' if active_page == 'printer' else '' }}"><span class="icon">{{ icons.icon("printer") }}</span> Printer</a>
       <a href="/admin/billing" class="{{ 'active' if active_page == 'billing' else '' }}"><span class="icon">{{ icons.icon("billing") }}</span> Billing</a>
       <a href="/admin/settings" class="{{ 'active' if active_page == 'settings' else '' }}"><span class="icon">{{ icons.icon("settings") }}</span> Settings</a>

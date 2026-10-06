@@ -6,10 +6,43 @@
     <h1>Menu</h1>
     <p>Menu items the WhatsApp AI grounds every reply in.{% if last_synced %} Last synced {{ last_synced[:16].replace('T', ' ') }}.{% endif %}</p>
   </div>
+  <div class="actions">
+    <button class="btn btn-primary" type="button" onclick="document.getElementById('addItemModal').classList.add('open')">+ Add item</button>
+  </div>
 </div>
 
 {% if import_message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg);">{{ import_message }}</div>{% endif %}
 {% if import_error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg);">Import failed: {{ import_error }}</div>{% endif %}
+{% if add_message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg);">{{ add_message }}</div>{% endif %}
+{% if add_error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg);">{{ add_error }}</div>{% endif %}
+
+<div class="modal-overlay{% if add_error %} open{% endif %}" id="addItemModal" onclick="if (event.target === this) this.classList.remove('open')">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>Add a menu item</h2>
+      <button class="modal-close" type="button" onclick="document.getElementById('addItemModal').classList.remove('open')">&times;</button>
+    </div>
+    <form method="post" action="/admin/catalog/add" class="form-grid">
+      <input type="hidden" name="q" value="{{ q }}">
+      <label class="full">Name
+        <input type="text" name="name" placeholder="e.g. Butter Chicken (Full)" required>
+      </label>
+      <label class="full">Category
+        <input type="text" name="category" placeholder="e.g. Main Course">
+      </label>
+      <label class="full">Unit <span class="muted">(optional)</span>
+        <input type="text" name="unit" placeholder="e.g. plate, piece">
+      </label>
+      <label class="full">Price ({{ currency }})
+        <input type="number" step="0.01" min="0" name="price" required>
+      </label>
+      <label class="full">Stock quantity <span class="muted">(0 = out of stock)</span>
+        <input type="number" step="1" min="0" name="stock_qty" value="1">
+      </label>
+      <div class="full"><button class="btn btn-primary" type="submit">Add item</button></div>
+    </form>
+  </div>
+</div>
 
 <div class="panel">
   <form class="filters-form" method="get" style="margin-bottom:16px;">

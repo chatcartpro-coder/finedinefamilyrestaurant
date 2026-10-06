@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>Message Templates</h1>
+    <p>Pre-approved WhatsApp templates for messaging a customer outside an active conversation (e.g. a proactive order-ready alert).</p>
+  </div>
+  <div class="actions">
+    <button class="btn btn-primary" type="button" {{ "disabled" if not api_configured }} onclick="document.getElementById('createTemplateModal').classList.add('open')">+ Create template</button>
+  </div>
+</div>
+
+{% if message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg);">{{ message }}</div>{% endif %}
+{% if error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg);">{{ error }}</div>{% endif %}
+
+{% if not api_configured %}
+<div class="panel" style="background:var(--amber-bg); color:var(--amber-fg);">
+  No WhatsApp number is connected yet - templates need <code>WHATSAPP_ACCESS_TOKEN</code> and
+  <code>WHATSAPP_BUSINESS_ACCOUNT_ID</code> configured (via <code>.env</code> or the <a href="/admin/whatsapp">WhatsApp connect page</a>) before you can create or list them.
+</div>
+{% endif %}
+
+<div class="modal-overlay{% if error %} open{% endif %}" id="createTemplateModal" onclick="if (event.target === this) this.classList.remove('open')">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h2>Create a message template</h2>
+      <button class="modal-close" type="button" onclick="document.getElementById('createTemplateModal').classList.remove('open')">&times;</button>
+    </div>
+    <form method="post" action="/admin/whatsapp/templates/create" class="form-grid">
+      <label class="full">Name <span class="muted">(lowercase, underscores only, e.g. order_ready)</span>
+        <input type="text" name="name" placeholder="order_ready" pattern="[a-zA-Z0-9_ ]+" required>
+      </label>
+      <label class="full">Category
+        <select name="category" required>
+          <option value="UTILITY">Utility (order/delivery updates - most common for this bot)</option>
+          <option value="MARKETING">Marketing (offers, promotions)</option>
+          <option value="AUTHENTICATION">Authentication (OTPs, login codes)</option>
+        </select>
+      </label>
+      <label class="full">Language code
+        <input type="text" name="language" value="en_US" placeholder="en_US">
+      </label>
+      <label class="full">Body text <span class="muted">(use {{ '{{1}}' }}, {{ '{{2}}' }}, &hellip; for placeholders, e.g. customer name or order number)</span>
+        <textarea name="body_text" rows="4" placeholder="Hi {{ '{{1}}' }}, your order #{{ '{{2}}' }} is ready for pickup!" required></textarea>
+      </label>
+      <label class="full">Footer text <span class="muted">(optional, no placeholders allowed)</span>
+        <input type="text" name="footer_text" placeholder="e.g. Fine Dine Family Restaurant">
+      </label>
+      <div class="full"><button class="btn btn-primary" type="submit">Submit for approval</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h2>Templates ({{ templates_list|length }})</h2></div>
+  <table>
+    <tr><th>Name</th><th>Category</th><th>Language</th><th>Status</th><th></th></tr>
+    {% for t in templates_list %}
+    <tr>
+      <td>{{ t.name }}</td>
+      <td>{{ t.category }}</td>
+      <td>{{ t.language }}</td>
+      <td>
+        {% if t.status == 'APPROVED' %}<span class="badge badge-green">Approved</span>
+        {% elif t.status == 'PENDING' %}<span class="badge badge-amber">Pending</span>
+        {% elif t.status == 'REJECTED' %}<span class="badge badge-red">Rejected</span>
+        {% else %}<span class="badge badge-grey">{{ t.status }}</span>{% endif %}
+      </td>
+      <td>
+        <form method="post" action="/admin/whatsapp/templates/{{ t.name }}/delete" onsubmit="return confirm('Delete template {{ t.name }}?');">
+          <button class="btn btn-outline" type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">{% if api_configured %}No templates yet - create one above.{% else %}Connect a WhatsApp number first.{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+{% endblock %}

@@ -102,6 +102,15 @@ a { color: inherit; text-decoration: none; }
 .stat-card .delta { font-size: 0.78em; color: var(--muted); display: flex; align-items: center; gap: 5px; }
 .stat-card.dark .delta { color: var(--lime); }
 
+/* ---- Modal ---- */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(10,10,10,0.5); z-index: 100; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay.open { display: flex; }
+.modal-box { background: var(--card); border-radius: var(--radius); padding: 24px 26px; max-width: 480px; width: 100%; max-height: 90vh; overflow-y: auto; }
+.modal-box .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.modal-box .modal-head h2 { margin: 0; }
+.modal-close { background: none; border: none; cursor: pointer; font-size: 1.3em; color: var(--muted); line-height: 1; padding: 4px; }
+.modal-close:hover { color: var(--text); }
+
 .grid-2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; align-items: start; }
 .grid-3 { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 18px; align-items: start; }
 @media (max-width: 1000px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }

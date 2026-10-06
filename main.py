@@ -8,13 +8,13 @@ under WhatsApp > Configuration, together with WHATSAPP_VERIFY_TOKEN from .env.
 """
 import logging
 import re
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from admin.routes import router as admin_router
-from admin.test_chat import router as test_chat_router  # DEMO-ONLY: remove before going live, see admin/test_chat.py
 from ai.agent import (
     compute_delivery_fee, detect_confirmation_intent, detect_delivery_preference,
     detect_probable_address, detect_reuse_saved_address, generate_image_reply, generate_reply,
@@ -34,7 +34,6 @@ logger = logging.getLogger("finedine-agent")
 app = FastAPI(title=f"{config.STORE_NAME} WhatsApp AI Agent")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(admin_router)
-app.include_router(test_chat_router)  # DEMO-ONLY: remove before going live, see admin/test_chat.py
 app.include_router(print_agent_router)
 
 
@@ -60,6 +59,18 @@ def health():
 @app.get("/privacy-policy", response_class=HTMLResponse)
 def privacy_policy():
     return PRIVACY_POLICY_HTML
+
+
+@app.on_event("startup")
+def _apply_store_settings_override():
+    from config import apply_store_settings_override
+    apply_store_settings_override()
+
+
+@app.on_event("startup")
+def _apply_whatsapp_connection_override():
+    from config import apply_whatsapp_connection_override
+    apply_whatsapp_connection_override()
 
 
 @app.on_event("startup")
@@ -105,6 +116,32 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
         entry = payload["entry"][0]
         change = entry["changes"][0]
         value = change["value"]
+
+        # Coexistence-only events - all arrive under different top-level keys
+        # than a normal customer message, so they must be checked before the
+        # "messages" branch below or they'd silently fall through to
+        # "ignored":
+        #   - "history": the one-time chat-history backfill (up to 6 months)
+        #     sent within 24h of a restaurant connecting via Embedded Signup
+        #     with history-sync consent - threads[].messages[].
+        #   - "smb_app_state_sync": the restaurant's WhatsApp Business app
+        #     contact list (add/edit/delete), kept in sync as customers rows.
+        #   - "smb_message_echoes": a live copy of a message the restaurant
+        #     owner sent manually from the WhatsApp Business app (or a linked
+        #     device), so the admin Conversations page shows the full
+        #     back-and-forth regardless of which app replied.
+        if "history" in value:
+            background_tasks.add_task(_process_coexistence_history, value["history"])
+            return {"status": "accepted"}
+
+        if "smb_app_state_sync" in value:
+            background_tasks.add_task(_process_coexistence_contact_sync, value["smb_app_state_sync"])
+            return {"status": "accepted"}
+
+        if "smb_message_echoes" in value:
+            for echo in value["smb_message_echoes"].get("messages", []):
+                background_tasks.add_task(_process_message_echo, echo)
+            return {"status": "accepted"}
 
         if "messages" not in value:
             return {"status": "ignored"}
@@ -217,13 +254,15 @@ def _apply_delivery_location(phone: str, order: dict, lat: float, lng: float, la
 def _apply_delivery_text_address(phone: str, order: dict, address_text: str):
     """Sibling to _apply_delivery_location for a customer who typed their
     address instead of sharing a WhatsApp location pin - same flow, no
-    coordinates involved. Also updates the customer's saved-address label so
-    a future order can offer to reuse it, the same way a shared-location
-    address would be (existing saved lat/lng, if any, are left untouched -
-    upsert_customer's COALESCE means this only overwrites the label, so a
-    customer who later shares real coordinates against a different address
-    won't have this stale text label silently attached to them)."""
+    coordinates involved. Also updates the customer's saved-address label and
+    last_address_text so a future order can offer to reuse it, the same way a
+    shared-location address would be (existing saved lat/lng, if any, are
+    left untouched - upsert_customer's COALESCE means this only overwrites
+    the label, so a customer who later shares real coordinates against a
+    different address won't have this stale text label silently attached to
+    them)."""
     store.upsert_customer(phone, label=address_text)
+    store.set_customer_address_text(phone, address_text)
     delivery_fee = compute_delivery_fee(order["subtotal"])
     store.set_order_delivery_text(order["id"], address_text, delivery_fee)
     order = store.get_order(order["id"])
@@ -300,6 +339,96 @@ def _process_image_message(phone: str, media_id: str, mime_type: str, caption: s
         _send(phone, "Sorry, I'm having trouble looking at that image right now. Could you describe the dish in words instead?")
 
 
+# ---- Coexistence sync handlers ----
+# Only ever invoked for a restaurant connected via Embedded Signup with
+# Coexistence (see whatsapp/coexistence.py, admin/routes.py's /admin/whatsapp
+# routes) - a .env-configured, non-Coexistence number never triggers these,
+# since Meta only sends these webhook fields for Coexistence connections.
+
+def _process_coexistence_history(history: dict):
+    """One-time backfill of up to 6 months of chat history, synced from the
+    restaurant's existing WhatsApp Business app after they connect via
+    Embedded Signup. Written straight into customers/conversations (not
+    staged) so it shows up immediately in the admin Conversations page,
+    same as live chat history."""
+    threads = history.get("threads", [])
+    imported = 0
+    for thread in threads:
+        # Each thread is the full history with one customer - its id is that
+        # customer's phone number, regardless of which side sent any given
+        # message within it.
+        customer_phone = thread.get("id")
+        if not customer_phone:
+            continue
+
+        for msg in thread.get("messages", []):
+            message_id = msg.get("id")
+            if message_id and store.already_processed(message_id):
+                continue
+            if message_id:
+                store.mark_processed(message_id)
+
+            # A message "from" the customer's own number is inbound; a
+            # message "from" anything else (the restaurant's business
+            # number) is outbound - i.e. one the restaurant sent, whether
+            # via this bot historically or by typing it in the WhatsApp
+            # Business app.
+            direction = "in" if msg.get("from") == customer_phone else "out"
+            text = msg.get("text", {}).get("body") if isinstance(msg.get("text"), dict) else None
+            text = text or f"[{msg.get('type', 'message')}]"
+            timestamp = msg.get("timestamp")
+            created_at = None
+            if timestamp:
+                try:
+                    created_at = datetime.fromtimestamp(int(timestamp), tz=timezone.utc).isoformat()
+                except (ValueError, TypeError):
+                    created_at = None
+
+            store.upsert_customer(customer_phone)
+            store.log_message(customer_phone, direction, text, created_at=created_at)
+            imported += 1
+
+    store.set_whatsapp_history_sync_status("complete")
+    logger.info("Coexistence history sync: imported %d message(s) across %d thread(s)", imported, len(threads))
+
+
+def _process_coexistence_contact_sync(sync: dict):
+    """The restaurant owner's WhatsApp Business app contact list (added/
+    edited/removed), kept as customers rows so saved names show up even for
+    a customer who hasn't messaged the bot yet."""
+    for entry in sync.get("state_sync", []):
+        contact = entry.get("contact") or {}
+        phone = contact.get("phone_number") or contact.get("wa_id")
+        if not phone:
+            continue
+        action = entry.get("action", "add")
+        if action == "remove":
+            continue  # customers/conversations history is kept even if unfriended in the app
+        name = contact.get("full_name") or contact.get("first_name")
+        store.upsert_customer(phone, name=name)
+
+
+def _process_message_echo(echo: dict):
+    """A message the restaurant owner sent manually from the WhatsApp
+    Business app (or a linked device) after connecting via Coexistence -
+    mirrored here purely for the admin Conversations page's record; the bot
+    takes no further action on it (it's an outbound message, not something
+    needing an AI reply)."""
+    message_id = echo.get("id")
+    if message_id:
+        if store.already_processed(message_id):
+            return
+        store.mark_processed(message_id)
+
+    customer_phone = echo.get("to")
+    if not customer_phone:
+        return
+    text = echo.get("text", {}).get("body") if isinstance(echo.get("text"), dict) else None
+    text = text or f"[{echo.get('type', 'message')} sent from WhatsApp Business app]"
+    store.upsert_customer(customer_phone)
+    store.log_message(customer_phone, "out", text)
+
+
 # ---- Customer-facing order flow ----
 
 def handle_customer_message(phone: str, text: str, already_logged: bool = False):
@@ -345,8 +474,12 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
             return
 
         customer = store.get_customer(phone)
-        if customer and customer.get("last_lat") is not None and detect_reuse_saved_address(text):
-            _apply_delivery_location(phone, order, customer["last_lat"], customer["last_lng"], customer.get("last_location_label"))
+        has_saved_address = customer and (customer.get("last_lat") is not None or customer.get("last_address_text"))
+        if has_saved_address and detect_reuse_saved_address(text):
+            if customer.get("last_lat") is not None:
+                _apply_delivery_location(phone, order, customer["last_lat"], customer["last_lng"], customer.get("last_location_label"))
+            else:
+                _apply_delivery_text_address(phone, order, customer["last_address_text"])
             return
 
         if detect_probable_address(text):
@@ -382,6 +515,8 @@ def _confirm_order(phone: str, order: dict):
     items = store.get_order_items(order["id"])
     _send(phone, _format_whatsapp_receipt(order, items))
 
+    _push_invoice_best_effort(order, items)
+
     if order.get("is_pickup"):
         return  # nothing to hand off to a delivery agent
 
@@ -392,6 +527,21 @@ def _confirm_order(phone: str, order: dict):
 
     store.assign_delivery_agent(order["id"], agent["phone"])
     _notify_delivery_agent(agent["phone"], order, items)
+
+
+def _push_invoice_best_effort(order: dict, items: list):
+    """Fire-and-forget call into billing/connector.py - never blocks or
+    fails the customer-facing confirmation flow. No-ops (just logs) until a
+    real billing vendor is wired in."""
+    if not config.BILLING_API_BASE_URL:
+        return  # not configured - skip silently, no log noise on every order
+    from billing.connector import BillingNotConfiguredError, push_order_invoice
+    try:
+        push_order_invoice(order, items)
+    except BillingNotConfiguredError:
+        logger.info("Billing connector not configured; skipping invoice push for order #%s", order["id"])
+    except Exception:
+        logger.exception("Billing invoice push failed for order #%s (non-fatal)", order["id"])
 
 
 def _apply_cart_updates(phone: str, text: str, order: dict | None):
@@ -480,21 +630,44 @@ _AGENT_STATUS_KEYWORDS = {
     "delivered": "delivered",
 }
 
+# Optional enrichment, not part of the status lifecycle above - a delivery
+# agent can send this any time after an order is packed (card-machine
+# payment taken on drop-off), for card payments only. Never required: a
+# cash-on-delivery order simply never gets this and payment_status stays
+# NULL forever - nothing downstream gates on it, so PACKED -> PICKED ->
+# DELIVERED works identically whether or not PAID was ever sent.
+# Future: a real card-machine webhook/SDK callback (or billing/connector.py's
+# sync_payment_status()) could set payment_status programmatically instead
+# of relying on this WhatsApp keyword - a strictly additive change, since
+# payment_status is already treated as an independent, optional field.
+_AGENT_PAYMENT_KEYWORDS = {
+    "paid": "paid",
+}
+
 
 def handle_delivery_agent_message(phone: str, text: str, already_logged: bool = False):
     if not already_logged:
         store.log_message(phone, "in", text)
 
     lowered = text.strip().lower()
-    new_status = _AGENT_STATUS_KEYWORDS.get(lowered)
 
     order = store.get_order_assigned_to_agent(phone)
     if not order:
         _send(phone, "You don't have an active delivery order right now.")
         return
 
+    payment_status = _AGENT_PAYMENT_KEYWORDS.get(lowered)
+    if payment_status:
+        if order["status"] not in ("packed", "picked_up", "delivered"):
+            _send(phone, f"Order #{order['id']} hasn't been packed yet - mark PACKED first.")
+            return
+        store.set_order_payment_status(order["id"], payment_status)
+        _send(phone, f"Order #{order['id']} marked as paid. Thanks!")
+        return
+
+    new_status = _AGENT_STATUS_KEYWORDS.get(lowered)
     if not new_status:
-        _send(phone, "Reply PACKED once the kitchen has the order ready, PICKED once you've collected it, or DELIVERED once it's dropped off.")
+        _send(phone, "Reply PACKED once the kitchen has the order ready, PICKED once you've collected it, PAID once payment is taken (card machine), or DELIVERED once it's dropped off.")
         return
 
     # Enforce the lifecycle order so a mistyped reply can't skip a stage.
@@ -526,7 +699,7 @@ def _notify_delivery_agent(agent_phone: str, order: dict, items: list):
     if order.get("delivery_lat") is not None:
         lines.append(f"Map: https://maps.google.com/?q={order['delivery_lat']},{order['delivery_lng']}")
     lines.append("")
-    lines.append("Reply PACKED once ready, PICKED once collected, DELIVERED once dropped off.")
+    lines.append("Reply PACKED once ready, PICKED once collected, PAID if you take a card payment, DELIVERED once dropped off.")
     _send(agent_phone, "\n".join(lines))
 
 

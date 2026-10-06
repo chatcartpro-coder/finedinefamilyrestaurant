@@ -14,11 +14,14 @@ free-form judgement, so a customer can never accidentally place an order.
 """
 import base64
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from config import config
 from ai.openrouter_client import chat_completion
 from ai.ordering_knowledge import get_clarification_hints
 from catalog import store as catalog_store
+from offers import store as offers_store
 
 CONFIRM_WORDS = {"confirm", "yes", "yep", "yeah", "ok", "okay", "place order", "place the order", "sure", "go ahead"}
 CANCEL_WORDS = {"cancel", "no", "nope", "stop", "wait", "change"}
@@ -78,11 +81,19 @@ don't treat a transcribed address with the same confidence as a typed one or a s
 - Once you have everything needed (items, size/clarification choices, delivery-or-pickup, and a confirmed address \
 if delivery), present the final itemized order: items, subtotal, delivery fee (0 for pickup), and total in \
 {currency}. End that message by asking the customer to reply CONFIRM to place the order or CANCEL to change it. \
-Always phrase it this way so the system can detect the reply. Move toward this final confirmation efficiently - \
-don't linger once you have what you need.
+Always phrase it this way so the system can detect the reply. Move toward this final confirmation efficiently once \
+the cart, delivery/pickup choice, and address (if needed) are all settled - don't ask further clarifying questions \
+once nothing is actually ambiguous, and don't linger once you have what you need.
 - Once an order's items are settled (customer seems done adding more), proactively suggest one or two popular \
 extras that pair well (e.g. a drink, a side, or a dessert) from the menu context if something relevant is shown - \
 but only once, and only from what's actually in the menu context, never invented. Don't push this into every reply.
+- If any active offers are listed below, mention the relevant one naturally when it applies to what the customer \
+is ordering (e.g. a percent-off deal that applies to their cart) - but only once per conversation, and only if \
+it's genuinely relevant, never forced into every reply.
+- Use the time-of-day context below to steer what you proactively suggest: lean toward breakfast items in the \
+morning, lunch-friendly options midday, and dinner/heavier dishes in the evening - but never refuse an order for an \
+item just because of the time of day; only use it to shape unprompted suggestions, not to gatekeep what a customer \
+can order.
 - Never say an order is placed/confirmed yourself - only the system marks an order confirmed after the customer \
 replies to that exact prompt. If asked "is my order confirmed?", check the order status context below and answer \
 truthfully.
@@ -100,6 +111,8 @@ Customer's current order:
 Order status: {order_status}
 Delivery info: {delivery_context}
 Saved address: {saved_address_context}
+Active offers: {active_offers_context}
+Time of day: {time_of_day_context}
 """
 
 
@@ -135,10 +148,51 @@ def _format_delivery_context(order: dict | None) -> str:
 
 
 def _format_saved_address_context(customer: dict | None) -> str:
-    if not customer or customer.get("last_lat") is None:
+    if not customer:
         return "(No saved address for this customer yet.)"
-    label = customer.get("last_location_label") or f"{customer['last_lat']:.5f}, {customer['last_lng']:.5f}"
-    return f"{label} (from a previous order)"
+    if customer.get("last_lat") is not None:
+        label = customer.get("last_location_label") or f"{customer['last_lat']:.5f}, {customer['last_lng']:.5f}"
+        return f"{label} (from a previous order)"
+    if customer.get("last_address_text"):
+        return f"{customer['last_address_text']} (from a previous order)"
+    return "(No saved address for this customer yet.)"
+
+
+def _format_offers_context(offers: list) -> str:
+    if not offers:
+        return "(No active offers right now.)"
+    parts = []
+    for o in offers:
+        if o["discount_type"] == "percent":
+            discount = f"{o['discount_value']:g}% off"
+        else:
+            discount = f"{config.CURRENCY} {o['discount_value']:.2f} off"
+        line = f"- {o['title']}: {discount}"
+        if o.get("description"):
+            line += f" - {o['description']}"
+        parts.append(line)
+    return "\n".join(parts)
+
+
+def _current_daypart() -> str:
+    try:
+        now_local = datetime.now(ZoneInfo(config.STORE_TIMEZONE))
+    except Exception:
+        now_local = datetime.now()
+    hour = now_local.hour
+    if 5 <= hour < 11:
+        return "breakfast (morning)"
+    if 11 <= hour < 15:
+        return "lunch (midday)"
+    if 15 <= hour < 18:
+        return "afternoon"
+    if 18 <= hour < 23:
+        return "dinner (evening)"
+    return "late-night"
+
+
+def _format_time_of_day_context() -> str:
+    return f"It is currently {_current_daypart()} for the restaurant's local time."
 
 
 def search_catalog_for_message(message: str, top_k: int = 8) -> list:
@@ -218,6 +272,8 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         order_status=order["status"] if order else "no active order",
         delivery_context=_format_delivery_context(order),
         saved_address_context=_format_saved_address_context(customer),
+        active_offers_context=_format_offers_context(offers_store.get_active_offers()),
+        time_of_day_context=_format_time_of_day_context(),
     )
 
     messages = [{"role": "system", "content": system_prompt}]

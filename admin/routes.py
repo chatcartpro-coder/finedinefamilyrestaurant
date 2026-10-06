@@ -196,13 +196,49 @@ def orders_page(request: Request, admin=Depends(get_current_admin), start: str =
 # ---- Catalog (menu) ----
 
 @router.get("/catalog", response_class=HTMLResponse)
-def catalog_page(request: Request, admin=Depends(get_current_admin), q: str = ""):
+def catalog_page(request: Request, admin=Depends(get_current_admin), q: str = "", added: str = ""):
     items = catalog_store.search_items(q, limit=1000) if q.strip() else catalog_store.list_items()
     last_synced = catalog_store.last_synced_at()
     return render(
         request, "catalog.html", active_page="catalog", admin=admin,
         items=items, last_synced=last_synced, q=q,
+        add_message="Item added to the menu." if added else None,
     )
+
+
+@router.post("/catalog/add")
+def catalog_add_item(
+    request: Request, admin=Depends(get_current_admin),
+    name: str = Form(...), category: str = Form(""), unit: str = Form(""),
+    price: str = Form(...), stock_qty: str = Form("1"), q: str = Form(""),
+):
+    items = catalog_store.search_items(q, limit=1000) if q.strip() else catalog_store.list_items()
+    last_synced = catalog_store.last_synced_at()
+
+    if not name.strip():
+        return render(
+            request, "catalog.html", active_page="catalog", admin=admin,
+            items=items, last_synced=last_synced, q=q, add_error="Item name is required.",
+        )
+    try:
+        price_val = float(price)
+        stock_qty_val = float(stock_qty) if stock_qty.strip() else 1.0
+    except ValueError:
+        return render(
+            request, "catalog.html", active_page="catalog", admin=admin,
+            items=items, last_synced=last_synced, q=q, add_error="Price and stock quantity must be numbers.",
+        )
+    if price_val < 0 or stock_qty_val < 0:
+        return render(
+            request, "catalog.html", active_page="catalog", admin=admin,
+            items=items, last_synced=last_synced, q=q, add_error="Price and stock quantity can't be negative.",
+        )
+
+    catalog_store.upsert_item(
+        name=name.strip(), price=price_val, stock_qty=stock_qty_val,
+        category=category.strip() or None, unit=unit.strip() or None, source="manual",
+    )
+    return RedirectResponse(f"/admin/catalog?q={q}&added=1", status_code=303)
 
 
 @router.post("/catalog/import")
@@ -493,7 +529,29 @@ def delivery_agents_deactivate(agent_id: int, admin=Depends(get_current_admin)):
 def billing_page(request: Request, admin=Depends(get_current_admin)):
     today = date.today()
     stats_month = store.get_stats(today.replace(day=1).isoformat(), today.isoformat())
-    return render(request, "billing.html", active_page="billing", admin=admin, stats_month=stats_month)
+    billing_settings = store.get_billing_settings()
+    return render(
+        request, "billing.html", active_page="billing", admin=admin,
+        stats_month=stats_month, billing_settings=billing_settings, message=None, error=None,
+    )
+
+
+@router.post("/billing/connector")
+def billing_connector_save(
+    request: Request, admin=Depends(get_current_admin),
+    enabled: str = Form(""), api_base_url: str = Form(""), api_key: str = Form(""),
+):
+    store.set_billing_settings(
+        enabled=bool(enabled),
+        api_base_url=api_base_url.strip() or None,
+        api_key=api_key.strip() or None,
+    )
+    today = date.today()
+    return render(
+        request, "billing.html", active_page="billing", admin=admin,
+        stats_month=store.get_stats(today.replace(day=1).isoformat(), today.isoformat()),
+        billing_settings=store.get_billing_settings(), message="Billing connector settings saved.", error=None,
+    )
 
 
 # ---- Printer ----
@@ -556,3 +614,170 @@ def settings_change_password(
 
     store.set_admin_password(admin["id"], hash_password(new_password))
     return render(request, "settings.html", active_page="settings", admin=admin, message="Password updated.", error=None)
+
+
+@router.post("/settings/store")
+def settings_save_store(
+    request: Request, admin=Depends(get_current_admin),
+    store_name: str = Form(...), currency: str = Form(...),
+    delivery_fee: str = Form(...), free_delivery_threshold: str = Form(...),
+    store_phone: str = Form(""),
+):
+    from config import apply_store_settings_override
+
+    if not store_name.strip():
+        return render(request, "settings.html", active_page="settings", admin=admin, message=None, error="Store name is required.")
+    if not currency.strip():
+        return render(request, "settings.html", active_page="settings", admin=admin, message=None, error="Currency is required.")
+    try:
+        delivery_fee_val = float(delivery_fee)
+        free_delivery_threshold_val = float(free_delivery_threshold)
+    except ValueError:
+        return render(request, "settings.html", active_page="settings", admin=admin, message=None, error="Delivery fee and free delivery threshold must be numbers.")
+    if delivery_fee_val < 0 or free_delivery_threshold_val < 0:
+        return render(request, "settings.html", active_page="settings", admin=admin, message=None, error="Delivery fee and free delivery threshold can't be negative.")
+
+    store.set_store_settings(
+        store_name=store_name.strip(), currency=currency.strip(),
+        delivery_fee=delivery_fee_val, free_delivery_threshold=free_delivery_threshold_val,
+        store_phone=store_phone.strip() or None,
+    )
+    apply_store_settings_override()  # take effect immediately, no restart needed
+    return render(request, "settings.html", active_page="settings", admin=admin, message="Store settings saved.", error=None)
+
+
+# ---- WhatsApp connection (Embedded Signup / Coexistence) ----
+
+@router.get("/whatsapp", response_class=HTMLResponse)
+def whatsapp_connect_page(request: Request, admin=Depends(get_current_admin)):
+    connection = store.get_whatsapp_connection()
+    return render(
+        request, "whatsapp_connect.html", active_page="whatsapp", admin=admin,
+        connection=connection, message=None, error=None,
+        meta_app_id=config.META_APP_ID, meta_config_id=config.META_CONFIG_ID,
+    )
+
+
+@router.post("/whatsapp/connect")
+def whatsapp_connect_callback(
+    request: Request, admin=Depends(get_current_admin),
+    code: str = Form(...), phone_number_id: str = Form(...),
+    waba_id: str = Form(""), is_coexistence: str = Form(""),
+):
+    from config import apply_whatsapp_connection_override
+    from whatsapp.coexistence import CoexistenceError, exchange_code_for_token, register_phone_number
+
+    try:
+        access_token = exchange_code_for_token(code)
+        register_phone_number(phone_number_id, access_token)
+    except CoexistenceError as e:
+        connection = store.get_whatsapp_connection()
+        return render(
+            request, "whatsapp_connect.html", active_page="whatsapp", admin=admin,
+            connection=connection, message=None, error=str(e),
+            meta_app_id=config.META_APP_ID, meta_config_id=config.META_CONFIG_ID,
+        )
+
+    store.set_whatsapp_connection(
+        access_token=access_token, phone_number_id=phone_number_id,
+        waba_id=waba_id or None, is_coexistence=bool(is_coexistence),
+    )
+    apply_whatsapp_connection_override()  # take effect immediately, no restart needed
+
+    connection = store.get_whatsapp_connection()
+    msg = (
+        "WhatsApp connected! Your existing WhatsApp Business app will keep working side "
+        "by side - chat history sync (up to 6 months) may take a few minutes to appear."
+        if connection and connection["is_coexistence"] else
+        "WhatsApp number connected."
+    )
+    return render(
+        request, "whatsapp_connect.html", active_page="whatsapp", admin=admin,
+        connection=connection, message=msg, error=None,
+        meta_app_id=config.META_APP_ID, meta_config_id=config.META_CONFIG_ID,
+    )
+
+
+@router.post("/whatsapp/disconnect")
+def whatsapp_disconnect(admin=Depends(get_current_admin)):
+    store.clear_whatsapp_connection()
+    return RedirectResponse("/admin/whatsapp", status_code=303)
+
+
+# ---- WhatsApp message templates ----
+# Pre-approved templates needed to message a customer outside the 24h
+# session window (e.g. a proactive "your order is ready" sent well after
+# their last message) - distinct from the free-form replies the bot sends
+# inside an active conversation. See whatsapp/templates.py.
+
+def _whatsapp_api_configured() -> bool:
+    return bool(config.WHATSAPP_ACCESS_TOKEN and config.WHATSAPP_BUSINESS_ACCOUNT_ID)
+
+
+@router.get("/whatsapp/templates", response_class=HTMLResponse)
+def whatsapp_templates_page(request: Request, admin=Depends(get_current_admin)):
+    from whatsapp.templates import WhatsAppTemplateError, list_templates
+
+    templates_list, error = [], None
+    if _whatsapp_api_configured():
+        try:
+            templates_list = list_templates()
+        except WhatsAppTemplateError as e:
+            error = str(e)
+    return render(
+        request, "whatsapp_templates.html", active_page="whatsapp_templates", admin=admin,
+        templates_list=templates_list, message=None, error=error,
+        api_configured=_whatsapp_api_configured(),
+    )
+
+
+@router.post("/whatsapp/templates/create")
+def whatsapp_templates_create(
+    request: Request, admin=Depends(get_current_admin),
+    name: str = Form(...), category: str = Form(...), language: str = Form("en_US"),
+    body_text: str = Form(...), footer_text: str = Form(""),
+):
+    from whatsapp.templates import WhatsAppTemplateError, create_template, list_templates
+
+    import re as _re
+    clean_name = _re.sub(r"[^a-z0-9_]", "", name.strip().lower().replace(" ", "_"))
+
+    error = None
+    message = None
+    if not clean_name:
+        error = "Template name is required (letters, numbers, underscores only)."
+    elif category not in ("MARKETING", "UTILITY", "AUTHENTICATION"):
+        error = "Invalid category."
+    elif not body_text.strip():
+        error = "Template body text is required."
+    else:
+        try:
+            create_template(
+                name=clean_name, category=category, body_text=body_text.strip(),
+                language=language.strip() or "en_US", footer_text=footer_text.strip() or None,
+            )
+            message = f"Template '{clean_name}' submitted - it will show as PENDING until Meta reviews and approves it."
+        except WhatsAppTemplateError as e:
+            error = str(e)
+
+    templates_list = []
+    if _whatsapp_api_configured():
+        try:
+            templates_list = list_templates()
+        except Exception:
+            pass
+    return render(
+        request, "whatsapp_templates.html", active_page="whatsapp_templates", admin=admin,
+        templates_list=templates_list, message=message, error=error,
+        api_configured=_whatsapp_api_configured(),
+    )
+
+
+@router.post("/whatsapp/templates/{name}/delete")
+def whatsapp_templates_delete(name: str, admin=Depends(get_current_admin)):
+    from whatsapp.templates import WhatsAppTemplateError, delete_template
+    try:
+        delete_template(name)
+    except WhatsAppTemplateError:
+        pass
+    return RedirectResponse("/admin/whatsapp/templates", status_code=303)

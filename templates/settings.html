@@ -23,14 +23,25 @@
 
   <div class="panel">
     <h2>Store configuration</h2>
-    <p class="muted">These values are set via environment variables (.env). Edit and redeploy to change them.</p>
-    <table>
-      <tr><td>Store name</td><td class="settings-value">{{ store_name }}</td></tr>
-      <tr><td>Currency</td><td class="settings-value">{{ currency }}</td></tr>
-      <tr><td>Delivery fee</td><td class="settings-value">{{ config.DELIVERY_FEE }}</td></tr>
-      <tr><td>Free delivery threshold</td><td class="settings-value">{{ config.FREE_DELIVERY_THRESHOLD }}</td></tr>
-      <tr><td>Store phone</td><td class="settings-value">{{ config.STORE_PHONE or "-" }}</td></tr>
-    </table>
+    <p class="muted">Defaults come from environment variables (.env); saving here overrides them immediately, no restart needed.</p>
+    <form method="post" action="/admin/settings/store" class="form-grid">
+      <label class="full">Store name
+        <input type="text" name="store_name" value="{{ store_name }}" required>
+      </label>
+      <label class="full">Currency
+        <input type="text" name="currency" value="{{ currency }}" required>
+      </label>
+      <label class="full">Delivery fee
+        <input type="number" step="0.01" min="0" name="delivery_fee" value="{{ config.DELIVERY_FEE }}" required>
+      </label>
+      <label class="full">Free delivery threshold
+        <input type="number" step="0.01" min="0" name="free_delivery_threshold" value="{{ config.FREE_DELIVERY_THRESHOLD }}" required>
+      </label>
+      <label class="full">Store phone
+        <input type="text" name="store_phone" value="{{ config.STORE_PHONE or '' }}">
+      </label>
+      <div class="full"><button class="btn btn-primary" type="submit">Save store settings</button></div>
+    </form>
   </div>
 </div>
 

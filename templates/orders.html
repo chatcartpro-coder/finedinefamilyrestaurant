@@ -29,7 +29,7 @@
 <div class="panel">
   <h2>Orders ({{ orders_with_items|length }})</h2>
   <table>
-    <tr><th>ID</th><th>Phone</th><th>Status</th><th>Items</th><th>Type</th><th>Delivery Agent</th><th>Subtotal</th><th>Delivery</th><th>Total</th><th>Location</th><th>Placed</th></tr>
+    <tr><th>ID</th><th>Phone</th><th>Status</th><th>Items</th><th>Type</th><th>Delivery Agent</th><th>Subtotal</th><th>Delivery</th><th>Total</th><th>Payment</th><th>Location</th><th>Placed</th></tr>
     {% for o, items in orders_with_items %}
     <tr>
       <td>#{{ o.id }}</td>
@@ -45,6 +45,7 @@
       <td>{{ currency }} {{ "%.2f"|format(o.subtotal) }}</td>
       <td>{{ currency }} {{ "%.2f"|format(o.delivery_fee) }}</td>
       <td><b>{{ currency }} {{ "%.2f"|format(o.total) }}</b>{% if o.discount_applied %} <span class="badge badge-green">offer applied</span>{% endif %}</td>
+      <td>{% if o.payment_status == "paid" %}<span class="badge badge-green">Paid</span>{% else %}<span class="badge badge-amber">Pending</span>{% endif %}</td>
       <td>
         {% if o.delivery_lat is not none %}
         <a href="https://maps.google.com/?q={{ o.delivery_lat }},{{ o.delivery_lng }}" target="_blank">Map</a>
@@ -53,7 +54,7 @@
       <td>{{ (o.created_at or "")[:16].replace('T', ' ') }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="11" class="muted">No orders in this range</td></tr>
+    <tr><td colspan="12" class="muted">No orders in this range</td></tr>
     {% endfor %}
   </table>
 </div>

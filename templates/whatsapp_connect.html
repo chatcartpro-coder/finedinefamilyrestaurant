@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>WhatsApp</h1>
+    <p>Connect the WhatsApp number this AI agent sends and receives on.</p>
+  </div>
+</div>
+
+{% if message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg);">{{ message }}</div>{% endif %}
+{% if error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg);">{{ error }}</div>{% endif %}
+
+{% if not meta_app_id or not meta_config_id %}
+<div class="panel" style="background:var(--amber-bg); color:var(--amber-fg);">
+  Embedded Signup isn't configured yet - set <code>META_APP_ID</code> and <code>META_CONFIG_ID</code> in <code>.env</code>
+  (from your Meta Tech Provider app's Developer Console) to enable connecting a number from this page.
+  Until then, the number configured via <code>WHATSAPP_ACCESS_TOKEN</code>/<code>WHATSAPP_PHONE_NUMBER_ID</code> in
+  <code>.env</code> is used as-is.
+</div>
+{% endif %}
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>Connection status</h2>
+    {% if connection %}
+    <table>
+      <tr><td>Mode</td><td class="settings-value">{% if connection.is_coexistence %}<span class="badge badge-green">Coexistence</span> (WhatsApp Business app stays in sync){% else %}<span class="badge badge-blue">Cloud API only</span>{% endif %}</td></tr>
+      <tr><td>Phone number ID</td><td class="settings-value">{{ connection.phone_number_id }}</td></tr>
+      <tr><td>History sync</td><td class="settings-value">
+        {% if connection.history_sync_status == 'complete' %}<span class="badge badge-green">Complete</span>
+        {% elif connection.history_sync_status == 'pending' %}<span class="badge badge-amber">In progress&hellip;</span>
+        {% else %}<span class="muted">-</span>{% endif %}
+      </td></tr>
+      <tr><td>Connected</td><td class="settings-value">{{ (connection.connected_at or "")[:16].replace('T', ' ') }}</td></tr>
+    </table>
+    <form method="post" action="/admin/whatsapp/disconnect" style="margin-top:16px;" onsubmit="return confirm('Disconnect this WhatsApp number? The bot will stop sending/receiving until a new one is connected.');">
+      <button class="btn btn-outline" type="submit">Disconnect</button>
+    </form>
+    {% else %}
+    <p class="muted">No number connected through this page yet - currently using the number configured via <code>.env</code> (<code>WHATSAPP_PHONE_NUMBER_ID</code>), if any.</p>
+    <button class="btn btn-primary" type="button" id="waSignupBtn" {{ "disabled" if not meta_app_id or not meta_config_id }}>Connect WhatsApp</button>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>How this works</h2>
+    <p class="muted">You can connect a brand-new WhatsApp Cloud API number, or choose <b>Coexistence</b> during setup to link your existing WhatsApp Business app number instead - customers won't notice any difference, and the restaurant can keep replying manually from the WhatsApp Business app on a phone while this AI agent also handles orders on the same number. Chats stay in sync both ways, and up to 6 months of existing chat history is imported automatically.</p>
+    <p class="muted">Requires Meta Tech Provider approval for this app - once approved, set <code>META_APP_ID</code>, <code>META_APP_SECRET</code>, and <code>META_CONFIG_ID</code> in <code>.env</code> to enable the button above.</p>
+  </div>
+</div>
+
+{% if meta_app_id and meta_config_id %}
+<script>
+  window.fbAsyncInit = function() {
+    FB.init({ appId: "{{ meta_app_id }}", autoLogAppEvents: true, xfbml: true, version: "{{ config.WHATSAPP_API_VERSION }}" });
+  };
+</script>
+<script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+
+<script>
+  (function() {
+    var connectedPhoneNumberId = null;
+    var connectedWabaId = null;
+    var isCoexistence = false;
+
+    // Embedded Signup posts the result of the popup flow back via postMessage -
+    // this is how we learn the phone_number_id/waba_id the owner picked and
+    // whether they chose "use my existing WhatsApp Business app number"
+    // (Coexistence) before the FB.login callback below even fires.
+    window.addEventListener("message", function(event) {
+      if (!event.origin || event.origin.indexOf("facebook.com") === -1) return;
+      try {
+        var data = JSON.parse(event.data);
+        if (data.type === "WA_EMBEDDED_SIGNUP" && data.event === "FINISH") {
+          connectedPhoneNumberId = data.data.phone_number_id;
+          connectedWabaId = data.data.waba_id;
+          isCoexistence = !!data.data.current_step && data.data.current_step.indexOf("COEX") !== -1;
+        }
+      } catch (e) { /* not an Embedded Signup message, ignore */ }
+    });
+
+    document.getElementById("waSignupBtn").addEventListener("click", function() {
+      FB.login(function(response) {
+        if (response.authResponse && response.authResponse.code) {
+          var form = document.createElement("form");
+          form.method = "POST";
+          form.action = "/admin/whatsapp/connect";
+
+          function field(name, value) {
+            var input = document.createElement("input");
+            input.type = "hidden"; input.name = name; input.value = value || "";
+            form.appendChild(input);
+          }
+          field("code", response.authResponse.code);
+          field("phone_number_id", connectedPhoneNumberId);
+          field("waba_id", connectedWabaId);
+          field("is_coexistence", isCoexistence ? "1" : "");
+
+          document.body.appendChild(form);
+          form.submit();
+        } else {
+          alert("WhatsApp connection was cancelled or failed.");
+        }
+      }, {
+        config_id: "{{ meta_config_id }}",
+        response_type: "code",
+        override_default_response_type: true,
+        extras: { feature: "whatsapp_embedded_signup", sessionInfoVersion: "3" },
+      });
+    });
+  })();
+</script>
+{% endif %}
+
+{% endblock %}

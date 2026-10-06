@@ -16,6 +16,16 @@ class Config:
     WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
     WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v20.0")
 
+    # WhatsApp Embedded Signup (Coexistence) - lets a restaurant connect its
+    # existing WhatsApp Business app number through the admin dashboard
+    # instead of us hand-configuring WHATSAPP_ACCESS_TOKEN/PHONE_NUMBER_ID
+    # above. Requires a Meta Tech Provider / Solution Partner app - these
+    # three come from that app's Meta Developer Console, not from a WABA.
+    # See whatsapp/coexistence.py and templates/whatsapp_connect.html.
+    META_APP_ID = os.getenv("META_APP_ID", "")
+    META_APP_SECRET = os.getenv("META_APP_SECRET", "")
+    META_CONFIG_ID = os.getenv("META_CONFIG_ID", "")  # Embedded Signup configuration ID
+
     # OpenRouter
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
     OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-4-26b-a4b-it:free")
@@ -44,11 +54,21 @@ class Config:
     # module is present and ready the moment they get a printer.
     PRINT_AGENT_TOKEN = os.getenv("PRINT_AGENT_TOKEN", "")
 
+    # Billing/invoicing connector - optional, disabled until a vendor is wired
+    # into billing/connector.py. Setting BILLING_API_BASE_URL is what turns
+    # the best-effort push in main.py's _confirm_order() on; see that module's
+    # docstring.
+    BILLING_API_BASE_URL = os.getenv("BILLING_API_BASE_URL", "")
+    BILLING_API_KEY = os.getenv("BILLING_API_KEY", "")
+
     # Restaurant info
     STORE_NAME = os.getenv("STORE_NAME", "Fine Dine Family Restaurant")
     STORE_PHONE = os.getenv("STORE_PHONE", "")
     STORE_LAT = os.getenv("STORE_LAT", "")
     STORE_LNG = os.getenv("STORE_LNG", "")
+    # IANA timezone name used to compute the current daypart (breakfast/lunch/
+    # dinner/etc.) for AI recommendations - defaults to UTC if unset.
+    STORE_TIMEZONE = os.getenv("STORE_TIMEZONE", "UTC")
 
     # Delivery pricing
     DELIVERY_FEE = float(os.getenv("DELIVERY_FEE", "10"))
@@ -65,3 +85,44 @@ class Config:
 
 
 config = Config()
+
+
+def apply_store_settings_override():
+    """Applies any admin-saved store_settings row (storage/store.py) on top
+    of the .env-sourced defaults above, so a Settings-page save takes effect
+    immediately without a redeploy/restart. Called once at app startup and
+    again right after a save. Deferred import avoids a circular import
+    (storage/store.py imports config)."""
+    from storage import store
+
+    saved = store.get_store_settings()
+    if not saved:
+        return
+    if saved.get("store_name"):
+        config.STORE_NAME = saved["store_name"]
+    if saved.get("currency"):
+        config.CURRENCY = saved["currency"]
+    if saved.get("delivery_fee") is not None:
+        config.DELIVERY_FEE = saved["delivery_fee"]
+    if saved.get("free_delivery_threshold") is not None:
+        config.FREE_DELIVERY_THRESHOLD = saved["free_delivery_threshold"]
+    if saved.get("store_phone"):
+        config.STORE_PHONE = saved["store_phone"]
+
+
+def apply_whatsapp_connection_override():
+    """Applies an Embedded Signup-connected number (storage/store.py's
+    whatsapp_connection row) on top of the .env-configured
+    WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID/WHATSAPP_BUSINESS_ACCOUNT_ID,
+    so a restaurant that connects via the dashboard doesn't need a redeploy.
+    Called once at startup and again right after a successful Embedded Signup
+    or disconnect. Deferred import avoids a circular import."""
+    from storage import store
+
+    conn = store.get_whatsapp_connection()
+    if not conn:
+        return
+    config.WHATSAPP_ACCESS_TOKEN = conn["access_token"]
+    config.WHATSAPP_PHONE_NUMBER_ID = conn["phone_number_id"]
+    if conn.get("waba_id"):
+        config.WHATSAPP_BUSINESS_ACCOUNT_ID = conn["waba_id"]

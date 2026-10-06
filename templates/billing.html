@@ -30,4 +30,25 @@
   </div>
 </div>
 
+{% if message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg); margin-top:16px;">{{ message }}</div>{% endif %}
+{% if error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg); margin-top:16px;">{{ error }}</div>{% endif %}
+
+<div class="panel" style="margin-top:16px;">
+  <h2>Billing software connector</h2>
+  <p class="muted">Optional: push confirmed orders to an external invoicing/accounting system (e.g. QuickBooks, Zoho Books, Tally). Leave disabled until a vendor is configured - see <code>billing/connector.py</code>. Note: the actual on/off switch today is the <code>BILLING_API_BASE_URL</code> environment variable, not this form - this panel is informational until a real vendor integration is implemented.</p>
+  <form method="post" action="/admin/billing/connector" class="form-grid">
+    <label class="full"><input type="checkbox" name="enabled" value="1" {{ 'checked' if billing_settings and billing_settings.enabled }}> Enable billing connector</label>
+    <label class="full">API base URL
+      <input type="text" name="api_base_url" placeholder="https://api.vendor.com" value="{{ billing_settings.api_base_url if billing_settings else '' }}">
+    </label>
+    <label class="full">API key
+      <input type="password" name="api_key" value="{{ billing_settings.api_key if billing_settings else '' }}">
+    </label>
+    <div class="full"><button class="btn btn-primary" type="submit">Save</button></div>
+  </form>
+  {% if billing_settings and billing_settings.updated_at %}
+  <p class="muted" style="margin-top:12px;">Last updated: {{ billing_settings.updated_at[:16].replace('T', ' ') }}</p>
+  {% endif %}
+</div>
+
 {% endblock %}

@@ -32,6 +32,7 @@ def _init_schema(conn):
         last_lat REAL,
         last_lng REAL,
         last_location_label TEXT,
+        last_address_text TEXT,
         updated_at TEXT
     );
 
@@ -54,6 +55,10 @@ def _init_schema(conn):
     -- packed/picked_up/delivered only apply to delivery orders, driven by
     -- the assigned delivery_agents member replying on WhatsApp; pickup
     -- orders go confirmed -> delivered directly (customer collects in person).
+    -- payment_status is independent of the status lifecycle above, not part
+    -- of it: NULL means cash/unknown, 'paid' means a delivery agent's card
+    -- machine took payment (see main.py's _AGENT_PAYMENT_KEYWORDS) - nothing
+    -- gates on it, a cash-on-delivery order simply never sets it.
     CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         phone TEXT,
@@ -118,6 +123,39 @@ def _init_schema(conn):
         active INTEGER DEFAULT 1,
         created_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS billing_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL DEFAULT 0,
+        api_base_url TEXT,
+        api_key TEXT,
+        updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS store_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        store_name TEXT,
+        currency TEXT,
+        delivery_fee REAL,
+        free_delivery_threshold REAL,
+        store_phone TEXT,
+        updated_at TEXT
+    );
+
+    -- Holds the WhatsApp Business Account connected via Embedded Signup
+    -- (Coexistence or standalone Cloud API number), overriding the
+    -- .env-configured WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID once set.
+    -- See whatsapp/coexistence.py.
+    CREATE TABLE IF NOT EXISTS whatsapp_connection (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        access_token TEXT,
+        phone_number_id TEXT,
+        waba_id TEXT,
+        is_coexistence INTEGER NOT NULL DEFAULT 0,
+        history_sync_status TEXT,       -- NULL | 'pending' | 'complete'
+        connected_at TEXT,
+        updated_at TEXT
+    );
     """)
     conn.commit()
 
@@ -129,6 +167,14 @@ def _init_schema(conn):
         conn.commit()
     if "printed_at" not in cols:
         conn.execute("ALTER TABLE orders ADD COLUMN printed_at TEXT")
+        conn.commit()
+    if "payment_status" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN payment_status TEXT")
+        conn.commit()
+
+    customer_cols = [row[1] for row in conn.execute("PRAGMA table_info(customers)").fetchall()]
+    if "last_address_text" not in customer_cols:
+        conn.execute("ALTER TABLE customers ADD COLUMN last_address_text TEXT")
         conn.commit()
 
 
@@ -154,13 +200,14 @@ def mark_processed(message_id: str):
 def get_customer(phone: str):
     conn = _get_conn()
     cur = conn.execute(
-        "SELECT phone, name, last_lat, last_lng, last_location_label FROM customers WHERE phone = ?",
+        "SELECT phone, name, last_lat, last_lng, last_location_label, last_address_text "
+        "FROM customers WHERE phone = ?",
         (phone,),
     )
     row = cur.fetchone()
     if not row:
         return None
-    keys = ["phone", "name", "last_lat", "last_lng", "last_location_label"]
+    keys = ["phone", "name", "last_lat", "last_lng", "last_location_label", "last_address_text"]
     return dict(zip(keys, row))
 
 
@@ -185,13 +232,32 @@ def set_customer_location(phone: str, lat: float, lng: float, label: str = None)
     upsert_customer(phone, lat=lat, lng=lng, label=label)
 
 
+def set_customer_address_text(phone: str, address_text: str):
+    """Persists a typed (non-pin) delivery address so it can be offered for
+    reuse next time, same as a shared location pin is via set_customer_location.
+    Kept in a separate column (last_address_text) rather than last_location_label,
+    since that label is reserved for a human-friendly tag on a lat/lng pin."""
+    conn = _get_conn()
+    conn.execute("""
+        INSERT INTO customers (phone, last_address_text, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(phone) DO UPDATE SET
+            last_address_text=excluded.last_address_text,
+            updated_at=excluded.updated_at
+    """, (phone, address_text, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
 # ---- Conversations ----
 
-def log_message(phone: str, direction: str, message: str):
+def log_message(phone: str, direction: str, message: str, created_at: str = None):
+    """created_at: optional ISO timestamp override, used only when backfilling
+    synced Coexistence chat history (whatsapp_connection's history webhook)
+    so imported messages keep their real send time instead of "now"."""
     conn = _get_conn()
     conn.execute(
         "INSERT INTO conversations (phone, direction, message, created_at) VALUES (?, ?, ?, ?)",
-        (phone, direction, message, datetime.now(timezone.utc).isoformat()),
+        (phone, direction, message, created_at or datetime.now(timezone.utc).isoformat()),
     )
     conn.commit()
 
@@ -212,7 +278,7 @@ def get_recent_history(phone: str, limit: int = 10):
 _ORDER_COLUMNS = (
     "id, phone, status, subtotal, delivery_fee, total, delivery_lat, delivery_lng, "
     "delivery_address_text, is_pickup, delivery_agent_phone, notes, created_at, confirmed_at, "
-    "discount_applied, printed_at"
+    "discount_applied, printed_at, payment_status"
 )
 
 
@@ -449,8 +515,17 @@ def get_unprinted_confirmed_orders():
 def _order_row_to_dict(row):
     keys = ["id", "phone", "status", "subtotal", "delivery_fee", "total", "delivery_lat", "delivery_lng",
             "delivery_address_text", "is_pickup", "delivery_agent_phone", "notes", "created_at", "confirmed_at",
-            "discount_applied", "printed_at"]
+            "discount_applied", "printed_at", "payment_status"]
     return dict(zip(keys, row))
+
+
+def set_order_payment_status(order_id: int, payment_status: str):
+    """Independent of order status (see orders table comment) - set by a
+    delivery agent's PAID reply (main.py's _AGENT_PAYMENT_KEYWORDS) for a
+    card-machine payment. Never required: stays NULL for cash-on-delivery."""
+    conn = _get_conn()
+    conn.execute("UPDATE orders SET payment_status = ? WHERE id = ?", (payment_status, order_id))
+    conn.commit()
 
 
 # ---- Delivery agents ----
@@ -574,6 +649,139 @@ def set_printer_settings(connection_type: str, printer_ip: str = None, printer_p
             printer_port=excluded.printer_port,
             updated_at=excluded.updated_at
     """, (connection_type, printer_ip, printer_port, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
+# ---- Billing connector settings ----
+# Single-row config, same shape as printer_settings. Not required to be
+# configured - this panel is informational for now; the actual on/off switch
+# for billing/connector.py's best-effort push is the BILLING_API_BASE_URL env
+# var (config.py), not this "enabled" flag - see main.py's
+# _push_invoice_best_effort(). Wire this row up as authoritative once a real
+# billing vendor implementation lands.
+
+def get_billing_settings():
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT enabled, api_base_url, api_key, updated_at FROM billing_settings WHERE id = 1"
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    keys = ["enabled", "api_base_url", "api_key", "updated_at"]
+    d = dict(zip(keys, row))
+    d["enabled"] = bool(d["enabled"])
+    return d
+
+
+def set_billing_settings(enabled: bool, api_base_url: str = None, api_key: str = None):
+    conn = _get_conn()
+    conn.execute("""
+        INSERT INTO billing_settings (id, enabled, api_base_url, api_key, updated_at)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            enabled=excluded.enabled,
+            api_base_url=excluded.api_base_url,
+            api_key=excluded.api_key,
+            updated_at=excluded.updated_at
+    """, (int(enabled), api_base_url, api_key, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
+# ---- Store settings (editable from the admin Settings page) ----
+# Single-row override on top of config.py's .env-sourced defaults - a value
+# saved here takes precedence over the environment variable until changed
+# again. See config.py's apply_store_settings_override(), called once at
+# startup and again right after a save so the change takes effect without
+# a restart.
+
+def get_store_settings():
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT store_name, currency, delivery_fee, free_delivery_threshold, store_phone, updated_at "
+        "FROM store_settings WHERE id = 1"
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    keys = ["store_name", "currency", "delivery_fee", "free_delivery_threshold", "store_phone", "updated_at"]
+    return dict(zip(keys, row))
+
+
+def set_store_settings(store_name: str = None, currency: str = None, delivery_fee: float = None,
+                        free_delivery_threshold: float = None, store_phone: str = None):
+    conn = _get_conn()
+    conn.execute("""
+        INSERT INTO store_settings (id, store_name, currency, delivery_fee, free_delivery_threshold, store_phone, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            store_name=excluded.store_name,
+            currency=excluded.currency,
+            delivery_fee=excluded.delivery_fee,
+            free_delivery_threshold=excluded.free_delivery_threshold,
+            store_phone=excluded.store_phone,
+            updated_at=excluded.updated_at
+    """, (store_name, currency, delivery_fee, free_delivery_threshold, store_phone, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
+# ---- WhatsApp connection (Embedded Signup / Coexistence) ----
+# Single-row, same shape as store_settings/billing_settings. Overrides the
+# .env-configured WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID once a
+# restaurant connects via Embedded Signup - see whatsapp/coexistence.py and
+# config.py's apply_whatsapp_connection_override().
+
+def get_whatsapp_connection():
+    conn = _get_conn()
+    cur = conn.execute("""
+        SELECT access_token, phone_number_id, waba_id, is_coexistence,
+               history_sync_status, connected_at, updated_at
+        FROM whatsapp_connection WHERE id = 1
+    """)
+    row = cur.fetchone()
+    if not row:
+        return None
+    keys = ["access_token", "phone_number_id", "waba_id", "is_coexistence",
+            "history_sync_status", "connected_at", "updated_at"]
+    d = dict(zip(keys, row))
+    d["is_coexistence"] = bool(d["is_coexistence"])
+    return d
+
+
+def set_whatsapp_connection(access_token: str, phone_number_id: str, waba_id: str = None,
+                             is_coexistence: bool = False):
+    conn = _get_conn()
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("""
+        INSERT INTO whatsapp_connection
+            (id, access_token, phone_number_id, waba_id, is_coexistence, history_sync_status, connected_at, updated_at)
+        VALUES (1, ?, ?, ?, ?, 'pending', ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            access_token=excluded.access_token,
+            phone_number_id=excluded.phone_number_id,
+            waba_id=excluded.waba_id,
+            is_coexistence=excluded.is_coexistence,
+            history_sync_status='pending',
+            connected_at=excluded.connected_at,
+            updated_at=excluded.updated_at
+    """, (access_token, phone_number_id, waba_id, int(is_coexistence), now, now))
+    conn.commit()
+
+
+def set_whatsapp_history_sync_status(status: str):
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE whatsapp_connection SET history_sync_status = ?, updated_at = ? WHERE id = 1",
+        (status, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def clear_whatsapp_connection():
+    """Disconnects the Embedded Signup-connected number, falling back to the
+    .env-configured WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID again."""
+    conn = _get_conn()
+    conn.execute("DELETE FROM whatsapp_connection WHERE id = 1")
     conn.commit()
 
 
