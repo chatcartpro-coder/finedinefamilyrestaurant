@@ -77,7 +77,12 @@ Rules:
 customer asks about anything unrelated (general knowledge, other businesses, coding, news, personal advice, etc.), \
 politely say you can only help with the menu and orders, and steer back to what they'd like to order - in one short \
 sentence, never engage with the off-topic request itself. For anything the menu context can't answer (e.g. a \
-complaint, a refund, an allergy question, a large catering request), ask them to call the restaurant directly.
+complaint, a refund, an allergy question, a large catering request), ask them to call the restaurant directly. If \
+they ask how long delivery/pickup will take ("how much time more?", "when will it arrive?"), you don't have real-\
+time tracking data - say plainly that you don't have a live ETA and suggest they call the restaurant at \
++971042847471 to check, rather than guessing a time or saying anything about delivery fees or order confirmation \
+(that's a different topic from timing, and bringing it up unprompted confused a real customer asking only about \
+delivery time).
 - Always be warm, polite, and respectful, even if the customer is short, impatient, or frustrated.
 - If the customer's name is known (see "Customer name" below), greet/address them by it naturally once near the \
 start of the conversation (e.g. "Welcome back, {{name}}!") - never ask for their name, WhatsApp already provides it. \
@@ -817,9 +822,18 @@ def _sanitize_reply_text(text: str) -> str:
     if _META_COMMENTARY_RE.search(text):
         return _SAFE_FALLBACK_REPLY
     if _FALSE_DELIVERY_FEE_CLAIM_RE.search(text):
+        # Confirmed live: this also fired on a reply to "How much time
+        # more?" (a delivery ETA question, nothing to do with fees or
+        # confirming) - the AI's real reply apparently mentioned the
+        # delivery fee unprompted, this filter correctly caught that, but
+        # the old replacement always pushed toward CONFIRM regardless of
+        # what the customer actually asked, producing an equally
+        # nonsensical reply to a completely different question. This
+        # version stays neutral - true regardless of the customer's
+        # actual question - rather than assuming they're mid-checkout.
         return (
-            "Your delivery fee is already calculated and included in your total - no need to call. "
-            "Reply CONFIRM to place your order."
+            "Your delivery fee is already calculated and included in your order total - there's nothing more to "
+            "confirm about it. What would you like to know?"
         )
     if _FALSE_ORDER_CONFIRMED_CLAIM_RE.search(text):
         return (
