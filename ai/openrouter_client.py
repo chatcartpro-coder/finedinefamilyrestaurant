@@ -47,6 +47,18 @@ def _call_model(messages, model: str, temperature: float, max_tokens: int) -> st
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
+                # Some free models (e.g. nemotron reasoning variants) emit
+                # their internal "thinking" text as part of the visible
+                # reply by default - this is the actual, structural fix for
+                # the raw chain-of-thought ("Wait! The assistant previous
+                # turn hallucinated...") that was confirmed live leaking
+                # straight to a customer, found by comparing against a
+                # sibling project (wurth-whatsapp-agent) that never hit this
+                # problem specifically because it sets this flag. Stops the
+                # reasoning text from ever being generated as part of
+                # content in the first place, instead of post-hoc filtering
+                # it out after the fact.
+                "reasoning": {"exclude": True},
             },
             # A model that's about to fail (429/empty content) responds almost
             # instantly - this timeout mainly matters for a model that hangs
