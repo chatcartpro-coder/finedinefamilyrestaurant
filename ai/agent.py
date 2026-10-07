@@ -18,6 +18,8 @@ import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from rapidfuzz import fuzz
+
 from config import config
 from ai.openrouter_client import chat_completion
 from ai.ordering_knowledge import get_clarification_hints
@@ -149,16 +151,16 @@ DELIVERY, PICKUP (takeaway), or DINE-IN if not already stated.
   - For pickup or dine-in: no location needed, no delivery fee - go straight to the final itemized total. For \
 dine-in, let them know their order will be prepared and ready for them at the restaurant.
   - For delivery: if the customer has a saved address (see "Saved address" below), ask them to confirm it's still \
-correct ("Deliver to {{saved address}} again? Reply YES or share a new location") instead of asking them to share \
-location from scratch. If they have no saved address, ask them to either share their location using WhatsApp's \
-location attachment (paperclip -> Location) OR simply type their delivery address as text - both are fine, they \
-don't need to use the location feature if it's easier to type it.
-  - IMPORTANT: a shared location pin only tells us which building the customer is in, not which door - the app \
-always asks a required follow-up for the door/apartment/villa number and landmark after a pin is shared, before the \
-final total is shown. This happens automatically outside of your reply, so once you see a location pin or a message \
-like "My door/unit number is: ..." in the conversation, treat the address as settled and move straight to the \
-itemized total - never ask for the door number yourself, and never say the order is confirmed until the customer \
-replies CONFIRM.
+correct ("Deliver to {{saved address}} again? Reply YES or share a new address") instead of asking for it from \
+scratch. If they have no saved address, ask them to type their delivery address as text: building/area name AND \
+door/apartment/villa number. Never ask them to share a location pin/WhatsApp location attachment - always ask for \
+the address in text only.
+  - If the customer does still send a location pin anyway (unprompted), that only tells us which building they're \
+in, not which door - the app always asks a required follow-up for the door/apartment/villa number and landmark \
+after a pin is shared, before the final total is shown. This happens automatically outside of your reply, so once \
+you see a location pin or a message like "My door/unit number is: ..." in the conversation, treat the address as \
+settled and move straight to the itemized total - never ask for the door number yourself, and never say the order \
+is confirmed until the customer replies CONFIRM.
 - If the customer's delivery address came from a voice note (visible in the conversation as a message you said or \
 that appears after a spoken message), read the address back to them explicitly and ask them to confirm it's \
 correct before finalizing the order, since speech-to-text can mishear house/building numbers and street names - \
@@ -245,7 +247,10 @@ If the customer asks for an item not in the menu context at all (see the rule ab
 flavor that isn't listed), add it as a REAL order line using a trailer line starting with exactly "ADDITEM:" \
 followed by one entry per off-catalog item this turn, separated by semicolons, formatted as \
 '"<exact item name, your own clean wording>" qty:Q' (quotes required around the name, since there's no catalog id \
-for it). This is a real cart line on the receipt/kitchen ticket, not just a note - the restaurant sets the actual \
+for it). The name must be JUST the dish name (e.g. "Vanilla Ice Cream", "Grilled Chicken") - never prepend a \
+preparation note like "Non-spicy" or "Extra spicy" into the name itself, since that breaks matching against the \
+real menu if it turns out to actually be a listed item; put any such detail in a separate NOTE: line instead. This \
+is a real cart line on the receipt/kitchen ticket, not just a note - the restaurant sets the actual \
 price later. Always tell the customer plainly that the price will be confirmed/mentioned at delivery - never invent \
 a price yourself, and never give out the restaurant's phone number here (that's only given after the order is \
 confirmed, as part of the delivery follow-up). Example:
@@ -269,9 +274,9 @@ Middle East Building, Room 305, 3rd Floor (not the whole message). Customer writ
 address -> ADDRESS: Al Wasl P562. Omit the ADDRESS line entirely if this turn's message has no address/door \
 information in it.
 - CRITICAL: if you just asked the customer to confirm a delivery address ("Deliver to X? Reply YES or share a new \
-location") and they reply "No" (or similar - "nope", "wrong", "not that one"), that means the ADDRESS IS WRONG, not \
-that they want to switch to pickup or dine-in - ask them to share the correct delivery address (by location or \
-text), and do NOT change the order type or move toward a final total/confirmation until a correct address is given. \
+address") and they reply "No" (or similar - "nope", "wrong", "not that one"), that means the ADDRESS IS WRONG, not \
+that they want to switch to pickup or dine-in - ask them to type the correct delivery address as text, and do NOT \
+change the order type or move toward a final total/confirmation until a correct address is given. \
 Never interpret a plain "No" in response to an address question as a request to skip delivery.
 
 Menu context (items relevant to this conversation):
@@ -615,38 +620,64 @@ _SIZE_SUFFIX_RE = re.compile(r"\s*\((half|full)\)\s*$", re.IGNORECASE)
 
 _SPICE_WORDS_RE = re.compile(r"\b(extra\s+)?(spicy|mild|hot)\b\s*", re.IGNORECASE)
 
+# How close an ADDITEM: name has to fuzzy-match (token_set_ratio - robust
+# to extra words like "Non-spicy preparation for X" wrapped around the
+# dish name, unlike a plain ratio) a real catalog item's name (ignoring
+# spice words and size suffix) to be treated as that real item rather
+# than off-catalog - high enough that a genuinely different dish (e.g.
+# "Vanilla Ice Cream" vs "Chicken Biryani", or the earlier confirmed
+# "coke" vs "Chole Chawal" false match) never clears it, low enough to
+# absorb wording differences the AI itself introduces (confirmed live:
+# "Grill Chicken" vs catalog's "Grilled Chicken (Full)", not a typo - the
+# AI's own paraphrase of a real dish name, plus an extra clarification
+# phrase wrapped around it).
+_CATALOG_MATCH_THRESHOLD = 78
+
 
 def _match_real_catalog_item(name: str, allowed_items: dict) -> dict | None:
-    """If an ADDITEM: name unambiguously matches exactly one real item
-    shown this turn (see the ADDITEM: hard guard in _parse_cart_actions),
+    """If an ADDITEM: name closely matches exactly one real item shown
+    this turn (see the ADDITEM: hard guard in _parse_cart_actions),
     returns that item dict instead of treating it as off-catalog. Always
     strips a spice-level word (spicy/mild/hot) first, since that was
     confirmed live to break matching entirely: the AI folds the spice
     clarification into the ADDITEM name itself (e.g. "Spicy Butter
     Chicken (Full)"), which no catalog name would ever contain verbatim.
-    A trailing "(Half)"/"(Full)" size suffix is then matched exactly WHEN
-    PRESENT (it's what disambiguates which of two sized variants is
-    meant), but ignored on both sides when absent from the ADDITEM name,
+    A trailing "(Half)"/"(Full)" size suffix is then compared exactly
+    WHEN PRESENT on the ADDITEM name (it's what disambiguates which of
+    two sized variants is meant), but ignored on both sides when absent,
     since that's the earlier confirmed-live case: a plain "Butter
     Chicken" request against a catalog that only lists "Butter Chicken
-    (Half)"/"(Full)" as separate rows. Returns None (stays off-catalog)
-    if zero or 2+ items match, since 2+ means size is genuinely ambiguous
-    and guessing one would be worse than asking."""
+    (Half)"/"(Full)" as separate rows. The remaining dish-name comparison
+    is fuzzy, not exact equality - confirmed live that an exact-only
+    match still missed "Grill Chicken" against the catalog's "Grilled
+    Chicken (Full)", a wording difference introduced by the AI itself
+    (not a typo), which otherwise left a real, correctly-priced menu item
+    showing as AED 0.00/off-menu on the printed receipt. Returns None
+    (stays off-catalog) if zero or 2+ items match at/above the threshold,
+    since 2+ means it's genuinely ambiguous and guessing one would be
+    worse than asking."""
     cleaned = _SPICE_WORDS_RE.sub("", name).strip()
     if not cleaned:
         return None
     has_size = bool(_SIZE_SUFFIX_RE.search(cleaned))
-    target_lower = cleaned.lower()
-    target_no_size = _SIZE_SUFFIX_RE.sub("", cleaned).strip().lower()
-    matches = []
+    target = cleaned.lower() if has_size else _SIZE_SUFFIX_RE.sub("", cleaned).strip().lower()
+    if not target:
+        return None
+    scored = []
     for it in allowed_items.values():
-        if has_size:
-            if it["name"].strip().lower() == target_lower:
-                matches.append(it)
-        else:
-            if _SIZE_SUFFIX_RE.sub("", it["name"]).strip().lower() == target_no_size:
-                matches.append(it)
-    return matches[0] if len(matches) == 1 else None
+        candidate = it["name"].strip().lower() if has_size else _SIZE_SUFFIX_RE.sub("", it["name"]).strip().lower()
+        score = fuzz.token_set_ratio(target, candidate)
+        if score >= _CATALOG_MATCH_THRESHOLD:
+            scored.append((score, it))
+    if not scored:
+        return None
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    # Only treat it as unambiguous if there's a single best match, or the
+    # top match is clearly ahead of the runner-up - mirrors the old
+    # "2+ exact matches = ambiguous" rule, now applied to fuzzy scores.
+    if len(scored) > 1 and scored[0][0] - scored[1][0] < 10:
+        return None
+    return scored[0][1]
 # Catches a reply claiming something was added to the order/cart
 # ("I've added 2 Chicken Dum Biryani to your order", "added to your cart",
 # "have added X") - used only when there's NO ITEMS: line at all, to

@@ -536,8 +536,8 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
             if is_delivery_order and order.get("delivery_lat") is None and not order.get("delivery_address_text"):
                 _send(
                     phone,
-                    "Before I place this order - where should we deliver it? Share your location (paperclip -> "
-                    "Location) or just type your delivery address, including door/apartment/villa number.",
+                    "Before I place this order - where should we deliver it? Please type your delivery address, "
+                    "including building/area name and door/apartment/villa number.",
                 )
                 return
             if is_delivery_order and order.get("delivery_lat") is not None and not order.get("delivery_address_text"):
