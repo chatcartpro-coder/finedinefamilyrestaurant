@@ -31,7 +31,9 @@ services:
       - key: OPENROUTER_FALLBACK_MODELS
         value: "~google/gemini-flash-latest,google/gemma-4-26b-a4b-it:free,google/gemma-4-31b-it:free"
       - key: OPENROUTER_VISION_MODEL
-        sync: false
+        value: ~google/gemini-flash-latest
+      - key: OPENROUTER_VISION_FALLBACK_MODELS
+        value: "~google/gemini-flash-latest,~openai/gpt-luna-latest,anthropic/claude-sonnet-5.5"
       - key: WHISPER_API_KEY
         sync: false
       - key: WHISPER_BASE_URL

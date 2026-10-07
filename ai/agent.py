@@ -1091,7 +1091,10 @@ def _guess_dish_name_from_image(image_bytes: bytes, mime_type: str, caption: str
             {"type": "text", "text": caption.strip() or "What dish is this?"},
         ]},
     ]
-    return chat_completion(messages, model=config.OPENROUTER_VISION_MODEL, temperature=0.1, max_tokens=20)
+    return chat_completion(
+        messages, model=config.OPENROUTER_VISION_MODEL, temperature=0.1, max_tokens=20,
+        fallback_models=config.OPENROUTER_VISION_FALLBACK_MODELS,
+    )
 
 
 def generate_image_reply(image_bytes: bytes, mime_type: str, caption: str = "") -> str:
@@ -1137,7 +1140,10 @@ def generate_image_reply(image_bytes: bytes, mime_type: str, caption: str = "") 
         {"role": "user", "content": user_content},
     ]
 
-    return chat_completion(messages, model=config.OPENROUTER_VISION_MODEL)
+    return chat_completion(
+        messages, model=config.OPENROUTER_VISION_MODEL,
+        fallback_models=config.OPENROUTER_VISION_FALLBACK_MODELS,
+    )
 
 
 def compute_delivery_fee(subtotal: float) -> float:

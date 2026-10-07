@@ -110,22 +110,37 @@ def _call_model(messages, model: str, temperature: float, max_tokens: int) -> st
     return content.strip()
 
 
-def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 1000, model: str = None) -> str:
+def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 1000, model: str = None,
+                     fallback_models: list = None) -> str:
     """Tries `model` (or config.OPENROUTER_MODEL) first, then falls through
-    config.OPENROUTER_FALLBACK_MODELS in order on a retryable failure (rate
-    limit, provider outage, timeout, empty/malformed response) - so one
-    free-tier model being temporarily rate-limited upstream doesn't take the
-    whole bot down. A non-retryable failure (e.g. bad request, auth error)
+    `fallback_models` (or config.OPENROUTER_FALLBACK_MODELS when no explicit
+    model= override is given) in order on a retryable failure (rate limit,
+    provider outage, timeout, empty/malformed response) - so one free-tier
+    model being temporarily rate-limited upstream doesn't take the whole
+    feature down. A non-retryable failure (e.g. bad request, auth error)
     raises immediately without burning through the fallback chain, since
-    every model would fail the same way."""
+    every model would fail the same way.
+
+    An explicit model= override used to skip the fallback chain entirely
+    (on the reasoning that it's a deliberate caller choice, e.g. picking a
+    vision-capable model) - confirmed live that this let a single free
+    vision model's temporary 429 upstream rate limit fail the ENTIRE image
+    feature outright, every time, with no fallback attempted at all. Now a
+    caller can pass its own fallback_models (e.g. ai/agent.py passing
+    config.OPENROUTER_VISION_FALLBACK_MODELS) to get the same resilience
+    for a non-default model; omitting it preserves the old no-fallback
+    behavior for callers that genuinely want only one exact model tried."""
     if not config.OPENROUTER_API_KEY:
         raise OpenRouterError("OPENROUTER_API_KEY is not set in .env")
 
     primary = model or config.OPENROUTER_MODEL
-    # Only chain fallbacks for the default text model - an explicit model=
-    # override (e.g. the vision model) is a deliberate choice by the caller,
-    # not something to silently swap out for a text-only fallback.
-    candidates = [primary] if model else [primary] + [m for m in config.OPENROUTER_FALLBACK_MODELS if m != primary]
+    if fallback_models is not None:
+        chain = fallback_models
+    elif model:
+        chain = []
+    else:
+        chain = config.OPENROUTER_FALLBACK_MODELS
+    candidates = [primary] + [m for m in chain if m != primary]
 
     last_error = None
     for i, candidate in enumerate(candidates):

@@ -34,6 +34,25 @@ class Config:
     OPENROUTER_VISION_MODEL = os.getenv("OPENROUTER_VISION_MODEL") or OPENROUTER_MODEL
     OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+    # Fallback chain for vision (image) calls specifically - confirmed live
+    # that an image request with no fallback chain (ai/agent.py passed an
+    # explicit model= override, which chat_completion() only ever chains
+    # fallbacks for when model= is NOT given - see ai/openrouter_client.py)
+    # hit a single free model's temporary upstream 429 rate limit and failed
+    # the ENTIRE image feature outright, every time, until that one
+    # provider's limit cleared. All entries must be vision/multimodal-
+    # capable - picked across different providers so one provider's outage
+    # doesn't take the whole chain down. Override via a comma-separated
+    # OPENROUTER_VISION_FALLBACK_MODELS env var.
+    OPENROUTER_VISION_FALLBACK_MODELS = [
+        m.strip() for m in os.getenv(
+            "OPENROUTER_VISION_FALLBACK_MODELS",
+            "~google/gemini-flash-latest,"
+            "~openai/gpt-luna-latest,"
+            "anthropic/claude-sonnet-5.5",
+        ).split(",") if m.strip()
+    ]
+
     # Fallback chain for text replies - tried in order after OPENROUTER_MODEL
     # if a call fails (rate limit, provider outage, model retired, etc).
     # Free-tier (":free") model slugs on OpenRouter change often - one
