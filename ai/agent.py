@@ -602,7 +602,7 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
             # through - telling the customer something was added when it
             # wasn't is worse than asking again.
             text = "Sorry, could you confirm exactly what you'd like to order? I want to make sure I get it right."
-        return text, [], None, None
+        return _sanitize_reply_text(text), [], None, None
 
     text = raw_reply[:match.start()].rstrip()
     actions = []
@@ -627,7 +627,63 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
         if address_text and address_text.lower() != "none":
             address = address_text
 
-    return text, actions, note, address
+    return _sanitize_reply_text(text), actions, note, address
+
+
+# Phrases that mean the model is narrating its own confusion/meta-state
+# instead of writing a customer reply - confirmed live: "Wait! The
+# assistant previous turn hallucinated/glitched or the prompt had a weird
+# cut" was sent directly to a real customer on WhatsApp, from the PAID
+# primary model (not a free-tier fallback), so this can't be fixed by
+# removing a model from the chain - it needs a content-level safety net
+# that applies regardless of which model answers.
+_META_COMMENTARY_RE = re.compile(
+    r"\b(the assistant|previous turn|hallucinat\w*|glitch\w*|weird cut|as an ai|i am an ai language model)\b",
+    re.IGNORECASE,
+)
+_SAFE_FALLBACK_REPLY = "Sorry, could you repeat that? I want to make sure I get your order right."
+
+
+def _sanitize_reply_text(text: str) -> str:
+    """Last line of defense before a reply reaches the customer: catches
+    meta-commentary leaking out of the model (narrating its own confusion)
+    and an obviously truncated reply. Confirmed live (all from the PAID
+    primary model, so this can't be fixed by removing a fallback model):
+    "Here" (a single word, nothing else), "...If delivery, we can send it
+    to" (cut off mid-clause), "...\\n\\nHere" (trailing orphan word), and a
+    bare "•" bullet with nothing after it were all sent as complete
+    replies. The common thread across every real case: no sentence-ending
+    punctuation (. ! ?) anywhere in the text AND it's short - a complete
+    reply of any real length always ends a sentence somewhere. A longer
+    reply with no ending punctuation is left alone, since multi-line order
+    summaries legitimately end on a price/total line with no period."""
+    if not text:
+        return _SAFE_FALLBACK_REPLY
+    if _META_COMMENTARY_RE.search(text):
+        return _SAFE_FALLBACK_REPLY
+    stripped = text.rstrip()
+    # Check the LAST line only, not the whole text - a multi-line order
+    # summary legitimately has "?" or "." in an earlier sentence while
+    # still being truncated on the final line (confirmed live: "Would
+    # this be for delivery...?\n\nIf delivery, we can send it to" has a
+    # real "?" in line 1 but is genuinely cut off on line 2).
+    last_line = stripped.rsplit("\n", 1)[-1].strip()
+    # A closing paren/quote is a normal way to end a reply on its own
+    # (e.g. "...(Price to be confirmed by restaurant)", "...(Half)") - only
+    # treat it as needing inner punctuation when it's wrapping an actual
+    # quoted/parenthetical SENTENCE, which is rare enough here not to be
+    # worth distinguishing; closing punctuation of any kind reads as a
+    # deliberate ending, unlike a bare dash/bullet/colon/comma (checked
+    # separately below) or a reply with no closing character at all.
+    ends_properly = bool(last_line) and last_line[-1] in ".!?)\"'"
+    if not ends_properly and len(stripped) < 160:
+        # A short-to-medium reply whose last line doesn't end a sentence
+        # reads as cut off mid-thought - a genuinely long, complete reply
+        # (e.g. a full multi-item order summary ending on a "Total: AED
+        # X.XX" line) is left alone even without trailing punctuation,
+        # since that's a normal way for a summary to end.
+        return _SAFE_FALLBACK_REPLY
+    return text
 
 
 def generate_reply(customer_message: str, order: dict | None, order_items: list, customer: dict | None = None, history: list = None) -> tuple[str, list, str | None, str | None]:
@@ -684,6 +740,11 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": customer_message})
 
+    # Uses chat_completion's default max_tokens (1000, raised from 600) -
+    # confirmed live that replies were truncating mid-sentence/mid-word
+    # ("Here", a bare bullet "-", "If delivery, we can send it to") even on
+    # the paid primary model, likely because some models spend part of
+    # their token budget on an internal step before visible output starts.
     raw_reply = chat_completion(messages)
     # Also allow removing an item already in the cart even if this turn's
     # catalog search didn't happen to re-surface it (e.g. "remove the

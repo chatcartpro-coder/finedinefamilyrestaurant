@@ -98,7 +98,7 @@ def _call_model(messages, model: str, temperature: float, max_tokens: int) -> st
     return content.strip()
 
 
-def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600, model: str = None) -> str:
+def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 1000, model: str = None) -> str:
     """Tries `model` (or config.OPENROUTER_MODEL) first, then falls through
     config.OPENROUTER_FALLBACK_MODELS in order on a retryable failure (rate
     limit, provider outage, timeout, empty/malformed response) - so one
