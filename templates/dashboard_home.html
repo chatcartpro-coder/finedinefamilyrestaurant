@@ -48,7 +48,7 @@
       <tr><th>ID</th><th>Phone</th><th>Status</th><th>Total</th></tr>
       {% for o in recent_orders %}
       <tr>
-        <td>#{{ o.id }}</td>
+        <td>{{ o.order_code or ('#' ~ o.id) }}</td>
         <td>{{ o.phone }}</td>
         <td>
           {% set b = {"draft": "badge-grey", "awaiting_confirmation": "badge-amber", "confirmed": "badge-green", "packed": "badge-blue", "picked_up": "badge-blue", "delivered": "badge-green", "cancelled": "badge-red"} %}

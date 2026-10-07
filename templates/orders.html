@@ -32,9 +32,22 @@
     <tr><th>ID</th><th>Phone</th><th>Status</th><th>Items</th><th>Type</th><th>Delivery Agent</th><th>Subtotal</th><th>Delivery</th><th>Total</th><th>Payment</th><th>Location</th><th>Placed</th><th></th></tr>
     {% for o, items in orders_with_items %}
     <tr>
-      <td>#{{ o.id }}</td>
+      <td><b>{{ o.order_code or ('#' ~ o.id) }}</b></td>
       <td>{{ o.phone }}</td>
-      <td><span class="badge {{ b.get(o.status, 'badge-grey') }}">{{ o.status }}</span></td>
+      <td>
+        <span class="badge {{ b.get(o.status, 'badge-grey') }}">{{ o.status }}</span>
+        <form method="post" action="/admin/orders/{{ o.id }}/status" style="margin-top:6px; display:flex; gap:4px;">
+          <input type="hidden" name="start" value="{{ start }}">
+          <input type="hidden" name="end" value="{{ end }}">
+          <input type="hidden" name="status" value="{{ status }}">
+          <select name="new_status" style="font-size:0.8em;">
+            {% for s in ["confirmed", "packed", "picked_up", "delivered", "cancelled"] %}
+            <option value="{{ s }}" {{ 'selected' if o.status == s }}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn btn-outline" type="submit" style="padding:4px 10px; font-size:0.8em;">Update</button>
+        </form>
+      </td>
       <td>
         {% for it in items %}
           {{ "%g"|format(it.qty) }}&times; {{ it.item_name_snapshot }}{{ ", " if not loop.last }}

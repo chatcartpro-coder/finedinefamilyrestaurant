@@ -119,7 +119,7 @@ def _write_receipt(printer, order: dict, store_name: str, currency: str):
     printer.text("-" * 32 + "\n")
 
     printer.set(align="left")
-    printer.text(f"Order #{order['id']}\n")
+    printer.text(f"Order: {order.get('order_code') or '#' + str(order['id'])}\n")
     printer.text(f"Confirmed: {(order['confirmed_at'] or '')[:16].replace('T', ' ')}\n")
     if order.get("customer_name"):
         printer.text(f"Customer: {order['customer_name']}\n")

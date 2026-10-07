@@ -111,7 +111,7 @@
             <tr><th>ID</th><th>Status</th><th>Total</th><th>Placed</th></tr>
             {% for o in orders_by_month.get(m.year_month, []) %}
             <tr>
-              <td>#{{ o.id }}</td>
+              <td>{{ o.order_code or ('#' ~ o.id) }}</td>
               <td>{{ o.status }}</td>
               <td>{{ currency }} {{ "%.2f"|format(o.total) }}</td>
               <td>{{ o.created_at|local_time }}</td>

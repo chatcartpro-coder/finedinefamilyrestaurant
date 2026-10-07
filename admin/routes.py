@@ -193,6 +193,41 @@ def orders_page(request: Request, admin=Depends(get_current_admin), start: str =
     )
 
 
+_STATUS_CUSTOMER_MESSAGES = {
+    "picked_up": "Your order {ref} is on its way!",
+    "delivered": "Your order {ref} has been delivered. Enjoy your meal! Thank you for ordering from {store}.",
+    "cancelled": "Your order {ref} has been cancelled by the restaurant. Please message us if you have any questions.",
+}
+
+
+@router.post("/orders/{order_id}/status")
+def order_update_status(
+    order_id: int, admin=Depends(get_current_admin),
+    new_status: str = Form(...), start: str = Form(""), end: str = Form(""), status: str = Form(""),
+):
+    """Manual status override from the Orders page - for staff to move an
+    order along (or cancel it) without waiting on a delivery agent's
+    WhatsApp keyword reply. Notifies the customer for the statuses they'd
+    care about, same wording as the delivery-agent flow in main.py."""
+    from urllib.parse import urlencode
+
+    order = store.get_order(order_id)
+    if order and new_status in store.ORDER_STATUSES and new_status != order["status"]:
+        store.set_order_status(order_id, new_status)
+        template = _STATUS_CUSTOMER_MESSAGES.get(new_status)
+        if template:
+            from whatsapp.client import WhatsAppError, send_text_message
+            updated = store.get_order(order_id)
+            msg = template.format(ref=store.order_ref(updated), store=config.STORE_NAME)
+            try:
+                send_text_message(order["phone"], msg)
+                store.log_message(order["phone"], "out", msg)
+            except WhatsAppError:
+                pass  # status change still stands; notification is best-effort
+    query = urlencode({k: v for k, v in {"start": start, "end": end, "status": status}.items() if v})
+    return RedirectResponse("/admin/orders" + (f"?{query}" if query else ""), status_code=303)
+
+
 @router.get("/orders/latest-id")
 def orders_latest_id(admin=Depends(get_current_admin)):
     """Baseline for the dashboard's live new-order poll (see base.html) -
@@ -236,6 +271,7 @@ def orders_new_since(since: int = 0, admin=Depends(get_current_admin)):
         "orders": [
             {
                 "id": o["id"],
+                "ref": store.order_ref(o),
                 "order_type": store.order_type_label(o),
                 "total": o["total"],
                 "phone": o["phone"],

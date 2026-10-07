@@ -683,7 +683,7 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
     VAT amount back out for the customer's records."""
     from config import vat_breakdown
 
-    lines = [f"{config.STORE_NAME}", f"Order #{order['id']} - confirmed", f"Order type: {store.order_type_label(order)}", ""]
+    lines = [f"{config.STORE_NAME}", f"Order {store.order_ref(order)} - confirmed", f"Order type: {store.order_type_label(order)}", ""]
 
     for item in items:
         qty = item["qty"]
@@ -759,10 +759,10 @@ def handle_delivery_agent_message(phone: str, text: str, already_logged: bool = 
     payment_status = _AGENT_PAYMENT_KEYWORDS.get(lowered)
     if payment_status:
         if order["status"] not in ("packed", "picked_up", "delivered"):
-            _send(phone, f"Order #{order['id']} hasn't been packed yet - mark PACKED first.")
+            _send(phone, f"Order {store.order_ref(order)} hasn't been packed yet - mark PACKED first.")
             return
         store.set_order_payment_status(order["id"], payment_status)
-        _send(phone, f"Order #{order['id']} marked as paid. Thanks!")
+        _send(phone, f"Order {store.order_ref(order)} marked as paid. Thanks!")
         return
 
     new_status = _AGENT_STATUS_KEYWORDS.get(lowered)
@@ -773,11 +773,11 @@ def handle_delivery_agent_message(phone: str, text: str, already_logged: bool = 
     # Enforce the lifecycle order so a mistyped reply can't skip a stage.
     valid_next = {"confirmed": "packed", "packed": "picked_up", "picked_up": "delivered"}
     if valid_next.get(order["status"]) != new_status:
-        _send(phone, f"Order #{order['id']} is currently '{order['status']}' - that update doesn't apply yet.")
+        _send(phone, f"Order {store.order_ref(order)} is currently '{order['status']}' - that update doesn't apply yet.")
         return
 
     store.set_order_status(order["id"], new_status)
-    _send(phone, f"Order #{order['id']} marked as {new_status.replace('_', ' ')}. Thanks!")
+    _send(phone, f"Order {store.order_ref(order)} marked as {new_status.replace('_', ' ')}. Thanks!")
 
     if new_status == "picked_up":
         _send(order["phone"], "Your order is on its way!")
@@ -786,7 +786,7 @@ def handle_delivery_agent_message(phone: str, text: str, already_logged: bool = 
 
 
 def _notify_delivery_agent(agent_phone: str, order: dict, items: list):
-    lines = [f"New delivery order - #{order['id']}", ""]
+    lines = [f"New delivery order - {store.order_ref(order)}", ""]
     for item in items:
         qty = item["qty"]
         qty_str = f"{qty:g}" if isinstance(qty, float) else str(qty)

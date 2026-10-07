@@ -43,6 +43,7 @@ def _serialize_order(order: dict) -> dict:
     excl_vat, vat_amount = vat_breakdown(order["total"])
     return {
         "id": order["id"],
+        "order_code": store.order_ref(order),
         "phone": order["phone"],
         "customer_name": customer.get("name") if customer else None,
         "confirmed_at": order["confirmed_at"],

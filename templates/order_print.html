@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Order #{{ order.id }} - Receipt</title>
+<title>Order {{ order.order_code or ('#' ~ order.id) }} - Receipt</title>
 <meta name="robots" content="noindex, nofollow">
 <style>
   @media print {
@@ -43,7 +43,7 @@
 <div class="order-type">*** {{ order_type_label.upper() }} ***</div>
 <div class="divider"></div>
 
-<div>Order #{{ order.id }}</div>
+<div><b>Order: {{ order.order_code or ('#' ~ order.id) }}</b></div>
 <div>Confirmed: {{ order.confirmed_at|local_time }}</div>
 {% if customer and customer.name %}<div>Customer: {{ customer.name }}</div>{% endif %}
 <div>Phone: {{ order.phone }}</div>

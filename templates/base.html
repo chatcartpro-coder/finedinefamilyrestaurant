@@ -147,11 +147,11 @@
     var printBtn = document.getElementById('newOrderPrintBtn');
     if (!banner || !text || !sub) return;
     if (orders.length === 1) {
-      text.textContent = 'New order #' + orders[0].id + ' received!';
+      text.textContent = 'New order ' + orders[0].ref + ' received!';
       sub.textContent = orders[0].order_type + ' - {{ currency }} ' + orders[0].total.toFixed(2);
     } else {
       text.textContent = orders.length + ' new orders received!';
-      sub.textContent = orders.map(function (o) { return '#' + o.id; }).join(', ');
+      sub.textContent = orders.map(function (o) { return o.ref; }).join(', ');
     }
     // Print button opens a print-ready receipt for the most recent order in
     // this batch (same tab-opening approach regardless of 1 vs several

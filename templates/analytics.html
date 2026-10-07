@@ -53,7 +53,7 @@
     {% set b = {"draft": "badge-grey", "awaiting_confirmation": "badge-amber", "confirmed": "badge-green", "cancelled": "badge-red", "fulfilled": "badge-blue"} %}
     {% for o in orders %}
     <tr>
-      <td>#{{ o.id }}</td>
+      <td>{{ o.order_code or ('#' ~ o.id) }}</td>
       <td>{{ o.phone }}</td>
       <td><span class="badge {{ b.get(o.status, 'badge-grey') }}">{{ o.status }}</span></td>
       <td>{{ currency }} {{ "%.2f"|format(o.total) }}</td>

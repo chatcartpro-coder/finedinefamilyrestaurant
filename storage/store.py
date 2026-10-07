@@ -181,6 +181,11 @@ def _init_schema(conn):
         conn.execute("ALTER TABLE orders ADD COLUMN order_type TEXT")
         conn.execute("UPDATE orders SET order_type = CASE WHEN is_pickup = 1 THEN 'pickup' ELSE 'delivery' END")
         conn.commit()
+    if "order_code" not in cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN order_code TEXT")
+        conn.commit()
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_order_code ON orders(order_code)")
+    conn.commit()
 
     customer_cols = [row[1] for row in conn.execute("PRAGMA table_info(customers)").fetchall()]
     if "last_address_text" not in customer_cols:
@@ -288,13 +293,19 @@ def get_recent_history(phone: str, limit: int = 10):
 _ORDER_COLUMNS = (
     "id, phone, status, subtotal, delivery_fee, total, delivery_lat, delivery_lng, "
     "delivery_address_text, is_pickup, delivery_agent_phone, notes, created_at, confirmed_at, "
-    "discount_applied, printed_at, payment_status, order_type"
+    "discount_applied, printed_at, payment_status, order_type, order_code"
 )
 
 # Human-readable order_type labels, shared by main.py's WhatsApp receipt and
 # admin/routes.py's new-order alert payload. Falls back to is_pickup for any
 # pre-order_type-column row that somehow still has a NULL order_type.
 ORDER_TYPE_LABELS = {"delivery": "Delivery", "pickup": "Takeaway / Pickup", "dine_in": "Dine-in"}
+
+
+def order_ref(order: dict) -> str:
+    """The reference shown to customers/staff/agents - the unique order_code
+    once confirmed, falling back to the internal #id for drafts."""
+    return order.get("order_code") or f"#{order['id']}"
 
 
 def order_type_label(order: dict) -> str:
@@ -474,12 +485,37 @@ def apply_order_discount(order_id: int, offer_id: int | None):
     _recalc_order_totals(order_id)
 
 
+ORDER_STATUSES = ["draft", "awaiting_confirmation", "confirmed", "packed", "picked_up", "delivered", "cancelled"]
+
+
+def _generate_order_code(conn) -> str:
+    """Customer-facing order reference, e.g. FD-261007-K7Q2 - date (store
+    local time) plus 4 random chars, so it can't be confused with or
+    guessed from the internal sequential id. Retries on the (unlikely)
+    collision, enforced by the unique index on orders.order_code."""
+    import secrets
+    from zoneinfo import ZoneInfo
+
+    try:
+        today = datetime.now(ZoneInfo(config.STORE_TIMEZONE))
+    except Exception:
+        today = datetime.now(timezone.utc)
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I - easy to read aloud
+    for _ in range(10):
+        code = f"FD-{today:%y%m%d}-" + "".join(secrets.choice(alphabet) for _ in range(4))
+        if not conn.execute("SELECT 1 FROM orders WHERE order_code = ?", (code,)).fetchone():
+            return code
+    raise RuntimeError("Could not generate a unique order code")
+
+
 def set_order_status(order_id: int, status: str):
     conn = _get_conn()
     if status == "confirmed":
+        existing = conn.execute("SELECT order_code FROM orders WHERE id = ?", (order_id,)).fetchone()
+        code = existing[0] if existing and existing[0] else _generate_order_code(conn)
         conn.execute(
-            "UPDATE orders SET status = ?, confirmed_at = ? WHERE id = ?",
-            (status, datetime.now(timezone.utc).isoformat(), order_id),
+            "UPDATE orders SET status = ?, confirmed_at = ?, order_code = ? WHERE id = ?",
+            (status, datetime.now(timezone.utc).isoformat(), code, order_id),
         )
     else:
         conn.execute("UPDATE orders SET status = ? WHERE id = ?", (status, order_id))
@@ -545,7 +581,7 @@ def get_unprinted_confirmed_orders():
 def _order_row_to_dict(row):
     keys = ["id", "phone", "status", "subtotal", "delivery_fee", "total", "delivery_lat", "delivery_lng",
             "delivery_address_text", "is_pickup", "delivery_agent_phone", "notes", "created_at", "confirmed_at",
-            "discount_applied", "printed_at", "payment_status", "order_type"]
+            "discount_applied", "printed_at", "payment_status", "order_type", "order_code"]
     return dict(zip(keys, row))
 
 
