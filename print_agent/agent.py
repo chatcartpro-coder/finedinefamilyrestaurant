@@ -251,12 +251,28 @@ def _print(connection_type: str, printer_target: str, order: dict, store_name: s
         print_order(printer_target, order, store_name, currency)
 
 
-def run_once(server_url: str, token: str, connection_type: str, printer_target: str, store_name: str, currency: str) -> int:
+def run_once(server_url: str, token: str, connection_type: str, printer_target: str, store_name: str, currency: str,
+             extra_printer_ips: list = None) -> int:
     orders = fetch_pending_orders(server_url, token)
     printed = 0
     for order in orders:
         try:
             _print(connection_type, printer_target, order, store_name, currency)
+            # Extra network printers (--extra-printer-ip, e.g. a second
+            # kitchen/counter copy) always print over a direct network
+            # connection, same as print_order - not bluetooth/windows,
+            # since those require their own distinct connection_type per
+            # printer, which this simple "prints the same order to every
+            # configured target" feature doesn't need to support. A
+            # failure on one extra printer is logged but never blocks
+            # acknowledging the order or printing to the other targets -
+            # the primary printer having gotten it is what matters for
+            # not re-printing on the next poll.
+            for extra_ip in (extra_printer_ips or []):
+                try:
+                    print_order(extra_ip, order, store_name, currency)
+                except Exception:
+                    logger.exception("Failed to print order #%s to extra printer %s (non-fatal)", order["id"], extra_ip)
             acknowledge_order(server_url, token, order["id"])
             logger.info("Printed and acknowledged order #%s", order["id"])
             printed += 1
@@ -267,14 +283,16 @@ def run_once(server_url: str, token: str, connection_type: str, printer_target: 
     return printed
 
 
-def poll_loop(server_url: str, token: str, connection_type: str, printer_target: str, store_name: str, currency: str, interval: int):
+def poll_loop(server_url: str, token: str, connection_type: str, printer_target: str, store_name: str, currency: str, interval: int,
+              extra_printer_ips: list = None):
     logger.info(
-        "Print agent started - polling %s every %ds, printing via %s to %s",
+        "Print agent started - polling %s every %ds, printing via %s to %s%s",
         server_url, interval, connection_type, printer_target,
+        f" (plus extra printers: {', '.join(extra_printer_ips)})" if extra_printer_ips else "",
     )
     while True:
         try:
-            run_once(server_url, token, connection_type, printer_target, store_name, currency)
+            run_once(server_url, token, connection_type, printer_target, store_name, currency, extra_printer_ips)
         except requests.RequestException:
             logger.exception("Failed to reach server - will retry next poll")
         except Exception:
@@ -293,7 +311,16 @@ def main():
     parser.add_argument("--currency", default=os.getenv("PRINT_AGENT_CURRENCY", "AED"))
     parser.add_argument("--interval", type=int, default=int(os.getenv("PRINT_AGENT_INTERVAL", "10")), help="Seconds between polls")
     parser.add_argument("--once", action="store_true", help="Print any pending orders once and exit, instead of polling forever")
+    parser.add_argument(
+        "--extra-printer-ip", action="append", default=None,
+        help="Additional network printer IP to ALSO print every order to (e.g. a second kitchen/counter copy) - "
+             "repeat the flag for more than one, or set PRINT_AGENT_EXTRA_PRINTER_IPS as a comma-separated list. "
+             "Always a direct network connection regardless of the primary printer's connection type.",
+    )
     args = parser.parse_args()
+    extra_printer_ips = args.extra_printer_ip or [
+        ip.strip() for ip in os.getenv("PRINT_AGENT_EXTRA_PRINTER_IPS", "").split(",") if ip.strip()
+    ]
 
     missing = [name for name, val in [("--server-url", args.server_url), ("--token", args.token)] if not val]
     if missing:
@@ -332,10 +359,10 @@ def main():
         logger.info("Using printer settings from server: %s -> %s", connection_type, printer_target)
 
     if args.once:
-        count = run_once(server_url, args.token, connection_type, printer_target, args.store_name, args.currency)
+        count = run_once(server_url, args.token, connection_type, printer_target, args.store_name, args.currency, extra_printer_ips)
         print(f"Printed {count} order(s).")
     else:
-        poll_loop(server_url, args.token, connection_type, printer_target, args.store_name, args.currency, args.interval)
+        poll_loop(server_url, args.token, connection_type, printer_target, args.store_name, args.currency, args.interval, extra_printer_ips)
 
 
 if __name__ == "__main__":

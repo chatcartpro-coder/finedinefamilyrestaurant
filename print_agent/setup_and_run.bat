@@ -14,6 +14,13 @@ REM (set in the admin dashboard's Printer page) - only do this if nothing
 REM else prints to this printer.
 set PRINTER_NAME=
 
+REM A second (or third, etc.) network printer to ALSO print every order
+REM to, e.g. a kitchen copy in addition to the counter printer - comma
+REM separated if more than one (e.g. 192.168.70.242,192.168.70.250).
+REM Leave blank if you only have one printer. Always connects directly
+REM over the network regardless of PRINTER_NAME above.
+set EXTRA_PRINTER_IPS=
+
 REM Prefer the "py" launcher (installed alongside Python on Windows and
 REM resolves reliably even right after a fresh install, before some shells
 REM have picked up the updated PATH) - fall back to "python" if "py" isn't
@@ -56,6 +63,8 @@ REM folder's contents were copied to the store PC (confirmed live:
 REM ModuleNotFoundError: No module named 'print_agent'). agent.py is
 REM self-contained (no imports from the rest of the project), so running it
 REM directly works regardless of what the containing folder is named.
+set PRINT_AGENT_EXTRA_PRINTER_IPS=%EXTRA_PRINTER_IPS%
+
 if "%PRINTER_NAME%"=="" (
     %PY% "%~dp0agent.py" --server-url https://finedinefamilyrestaurant.onrender.com --token %PRINT_AGENT_TOKEN%
 ) else (
