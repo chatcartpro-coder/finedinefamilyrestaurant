@@ -231,12 +231,12 @@ def poll_loop(server_url: str, token: str, connection_type: str, printer_target:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Al Madina print agent - polls for confirmed orders and prints them.")
+    parser = argparse.ArgumentParser(description="Fine Dine Family Restaurant print agent - polls for confirmed orders and prints them.")
     parser.add_argument("--server-url", default=os.getenv("PRINT_AGENT_SERVER_URL"), help="Cloud app base URL, e.g. https://your-app.onrender.com")
     parser.add_argument("--token", default=os.getenv("PRINT_AGENT_TOKEN"), help="Shared print agent token (matches PRINT_AGENT_TOKEN in the server's .env)")
     parser.add_argument("--printer-ip", default=os.getenv("PRINT_AGENT_PRINTER_IP"), help="Network printer's IP address (for WiFi/Ethernet printers)")
     parser.add_argument("--printer-port", default=os.getenv("PRINT_AGENT_PRINTER_PORT"), help="Serial/COM port (for Bluetooth-paired printers, e.g. COM5 or /dev/rfcomm0)")
-    parser.add_argument("--store-name", default=os.getenv("PRINT_AGENT_STORE_NAME", "Al Madina Nawes Supermarket"))
+    parser.add_argument("--store-name", default=os.getenv("PRINT_AGENT_STORE_NAME", "Fine Dine Family Restaurant"))
     parser.add_argument("--currency", default=os.getenv("PRINT_AGENT_CURRENCY", "AED"))
     parser.add_argument("--interval", type=int, default=int(os.getenv("PRINT_AGENT_INTERVAL", "10")), help="Seconds between polls")
     parser.add_argument("--once", action="store_true", help="Print any pending orders once and exit, instead of polling forever")
