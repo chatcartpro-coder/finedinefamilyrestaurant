@@ -949,7 +949,25 @@ def _notify_delivery_agent(agent_phone: str, order: dict, items: list):
     _send(agent_phone, "\n".join(lines))
 
 
+_WHATSAPP_MAX_MESSAGE_LENGTH = 4096
+
+
 def _send(phone: str, message: str):
+    if len(message) > _WHATSAPP_MAX_MESSAGE_LENGTH:
+        # Confirmed live: a model's raw internal reasoning (over 4096 chars)
+        # got passed all the way through to here and WhatsApp's API
+        # rejected the send outright with a 400 - the customer got nothing
+        # at all, not even a fallback message, since this failure happened
+        # one level below every other safety net (ai/agent.py's sanitize
+        # function catches obviously broken replies, but a long, fluent,
+        # grammatically normal wall of text isn't one of its triggers).
+        # Hard-capped here as the absolute last line of defense, regardless
+        # of what produced the message.
+        logger.warning(
+            "Message to %s was %d chars (over WhatsApp's %d limit) - truncating before send",
+            phone, len(message), _WHATSAPP_MAX_MESSAGE_LENGTH,
+        )
+        message = message[:_WHATSAPP_MAX_MESSAGE_LENGTH - 3].rstrip() + "..."
     try:
         send_text_message(phone, message)
         store.log_message(phone, "out", message)

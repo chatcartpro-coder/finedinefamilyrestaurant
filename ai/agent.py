@@ -242,6 +242,11 @@ building is Middle East Building, Room No. 305, 3rd Floor. Please deliver it to 
 Middle East Building, Room 305, 3rd Floor (not the whole message). Customer writes "Al wasl p562" as their delivery \
 address -> ADDRESS: Al Wasl P562. Omit the ADDRESS line entirely if this turn's message has no address/door \
 information in it.
+- CRITICAL: if you just asked the customer to confirm a delivery address ("Deliver to X? Reply YES or share a new \
+location") and they reply "No" (or similar - "nope", "wrong", "not that one"), that means the ADDRESS IS WRONG, not \
+that they want to switch to pickup or dine-in - ask them to share the correct delivery address (by location or \
+text), and do NOT change the order type or move toward a final total/confirmation until a correct address is given. \
+Never interpret a plain "No" in response to an address question as a request to skip delivery.
 
 Menu context (items relevant to this conversation):
 {catalog_context}
@@ -631,17 +636,33 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
 
 
 # Phrases that mean the model is narrating its own confusion/meta-state
-# instead of writing a customer reply - confirmed live: "Wait! The
-# assistant previous turn hallucinated/glitched or the prompt had a weird
-# cut" was sent directly to a real customer on WhatsApp, from the PAID
-# primary model (not a free-tier fallback), so this can't be fixed by
-# removing a model from the chain - it needs a content-level safety net
-# that applies regardless of which model answers.
+# instead of writing a customer reply - confirmed live TWICE, from two
+# different models (one paid, one a free reasoning-capable model despite
+# the API's reasoning:exclude flag): "Wait! The assistant previous turn
+# hallucinated/glitched..." and a multi-paragraph self-debugging essay
+# ("I need to check what items are in the order... This is a problem - I
+# claimed to add items but didn't actually add them... I think I need to
+# proceed with the order summary...") that ran past WhatsApp's 4096-char
+# message limit and got the send rejected outright - the customer got
+# NOTHING, not even a fallback, since that failure happens one level
+# below this filter (see main.py's _send hard length cap, the actual
+# last line of defense). This can't be fixed by removing one model from
+# the chain - it needs a content-level safety net that applies regardless
+# of which model answers.
 _META_COMMENTARY_RE = re.compile(
-    r"\b(the assistant|previous turn|hallucinat\w*|glitch\w*|weird cut|as an ai|i am an ai language model)\b",
+    r"\b(the assistant|previous turn|hallucinat\w*|glitch\w*|weird cut|as an ai|i am an ai language model"
+    r"|let me check|i need to (check|add|verify)|this is a problem|i claimed to|i think i need to"
+    r"|looking (back|more closely) at|menu context (says|shows)|according to the rules|the rules say)\b",
     re.IGNORECASE,
 )
 _SAFE_FALLBACK_REPLY = "Sorry, could you repeat that? I want to make sure I get your order right."
+# A real customer reply is explicitly instructed to stay under ~100 words
+# (SYSTEM_PROMPT_TEMPLATE's "Keep replies under 100 words" rule) - a reply
+# many times that length is itself a strong signal of leaked internal
+# reasoning even when it doesn't match a specific _META_COMMENTARY_RE
+# phrase, since nothing in this domain legitimately needs a 1500+
+# character reply.
+_MAX_PLAUSIBLE_REPLY_LENGTH = 1500
 
 
 def _sanitize_reply_text(text: str) -> str:
@@ -671,6 +692,15 @@ def _sanitize_reply_text(text: str) -> str:
     if len(stripped) <= 6:
         # "Here", "Ok", "-" etc. - too short to be a real, complete reply
         # to anything in this domain.
+        return _SAFE_FALLBACK_REPLY
+    if len(stripped) > _MAX_PLAUSIBLE_REPLY_LENGTH:
+        # Confirmed live: a multi-paragraph self-debugging essay (well over
+        # 1500 chars) passed through here without matching any specific
+        # _META_COMMENTARY_RE phrase, then exceeded WhatsApp's 4096-char
+        # limit downstream and got the send rejected outright - the
+        # customer got nothing. Catching the length here, upstream of that
+        # failure, means a proper short apology goes out instead of either
+        # a huge wall of text or total silence.
         return _SAFE_FALLBACK_REPLY
     return text
 
