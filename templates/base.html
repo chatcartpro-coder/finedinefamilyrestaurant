@@ -120,7 +120,7 @@
   // survives page navigation/reloads within this browser, and is first
   // initialized from /admin/orders/latest-id so existing orders never
   // trigger the alert the moment the dashboard is opened.
-  var POLL_INTERVAL_MS = 8000;
+  var POLL_INTERVAL_MS = 10000;
   // "last seen" is a confirmed_at ISO timestamp string (e.g.
   // "2026-10-07T03:57:02.141+00:00"), NOT a numeric order id - an order's
   // own internal id is claimed the moment it's created as a draft, often
@@ -310,11 +310,35 @@
     startTitleFlash();
   }
 
+  // Tracks consecutive failed polls (network error, or a non-OK response
+  // like 503 - Render serves exactly this during a redeploy's brief
+  // restart window) - after several in a row, the service is either
+  // mid-redeploy or genuinely down, and a stale JS bundle from before the
+  // deploy could be running against a changed API. Forcing a hard reload
+  // recovers automatically once the new deploy is actually live, instead
+  // of silently retrying forever with no visible sign anything is wrong.
+  var consecutiveFailures = 0;
+  var RELOAD_AFTER_FAILURES = 3;
+
   function poll(lastSeen) {
     fetch('/admin/orders/new?since=' + encodeURIComponent(lastSeen || ''), { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (r) {
+        if (!r.ok) {
+          consecutiveFailures++;
+          return null;
+        }
+        consecutiveFailures = 0;
+        return r.json();
+      })
       .then(function (data) {
-        if (!data) return;
+        if (consecutiveFailures >= RELOAD_AFTER_FAILURES) {
+          window.location.reload();
+          return;
+        }
+        if (!data) {
+          setTimeout(function () { poll(lastSeen); }, POLL_INTERVAL_MS);
+          return;
+        }
         if (data.orders && data.orders.length > 0) {
           showBanner(data.orders);
         }
@@ -323,7 +347,12 @@
         setTimeout(function () { poll(next); }, POLL_INTERVAL_MS);
       })
       .catch(function () {
-        // Network hiccup - just retry on the next interval rather than stopping polling entirely.
+        // Network hiccup (or the server unreachable entirely, e.g. mid-redeploy).
+        consecutiveFailures++;
+        if (consecutiveFailures >= RELOAD_AFTER_FAILURES) {
+          window.location.reload();
+          return;
+        }
         setTimeout(function () { poll(lastSeen); }, POLL_INTERVAL_MS);
       });
   }

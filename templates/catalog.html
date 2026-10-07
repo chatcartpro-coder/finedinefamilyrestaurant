@@ -83,3 +83,11 @@
 </div>
 
 {% endblock %}
+{% block extra_scripts %}
+<script>
+  // Keeps the menu list current if items/stock/prices change elsewhere
+  // (e.g. another admin session, a catalog re-sync) without staff having
+  // to remember to manually reload this page.
+  setTimeout(function () { window.location.reload(); }, 12 * 60 * 60 * 1000);
+</script>
+{% endblock %}
