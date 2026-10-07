@@ -646,42 +646,31 @@ _SAFE_FALLBACK_REPLY = "Sorry, could you repeat that? I want to make sure I get 
 
 def _sanitize_reply_text(text: str) -> str:
     """Last line of defense before a reply reaches the customer: catches
-    meta-commentary leaking out of the model (narrating its own confusion)
-    and an obviously truncated reply. Confirmed live (all from the PAID
-    primary model, so this can't be fixed by removing a fallback model):
-    "Here" (a single word, nothing else), "...If delivery, we can send it
-    to" (cut off mid-clause), "...\\n\\nHere" (trailing orphan word), and a
-    bare "•" bullet with nothing after it were all sent as complete
-    replies. The common thread across every real case: no sentence-ending
-    punctuation (. ! ?) anywhere in the text AND it's short - a complete
-    reply of any real length always ends a sentence somewhere. A longer
-    reply with no ending punctuation is left alone, since multi-line order
-    summaries legitimately end on a price/total line with no period."""
+    meta-commentary leaking out of the model (narrating its own confusion).
+    Confirmed live (from the PAID primary model, so this can't be fixed by
+    removing a fallback model) that "the assistant previous turn
+    hallucinated/glitched or the prompt had a weird cut" was sent straight
+    to a real customer - that's the main thing this guards against.
+
+    An earlier version also rejected any short reply whose last line
+    didn't end in sentence punctuation, meant to catch cutoffs like a bare
+    "Here" or a dangling bullet - but that heuristic was confirmed live to
+    ALSO reject completely normal, correct replies ("Total: AED 24.00",
+    "Perfect, confirmed for delivery to Al wasl p562 202", any reply
+    ending on a price or address with no period), which broke the order
+    flow worse than the truncation bug it was meant to fix (trapped the
+    customer in a confirmation loop). Removed that check entirely - a
+    missed truncation is a much smaller problem than blocking normal
+    replies. Only an extremely short reply is still caught, since that's
+    unambiguous regardless of ending punctuation."""
     if not text:
         return _SAFE_FALLBACK_REPLY
     if _META_COMMENTARY_RE.search(text):
         return _SAFE_FALLBACK_REPLY
-    stripped = text.rstrip()
-    # Check the LAST line only, not the whole text - a multi-line order
-    # summary legitimately has "?" or "." in an earlier sentence while
-    # still being truncated on the final line (confirmed live: "Would
-    # this be for delivery...?\n\nIf delivery, we can send it to" has a
-    # real "?" in line 1 but is genuinely cut off on line 2).
-    last_line = stripped.rsplit("\n", 1)[-1].strip()
-    # A closing paren/quote is a normal way to end a reply on its own
-    # (e.g. "...(Price to be confirmed by restaurant)", "...(Half)") - only
-    # treat it as needing inner punctuation when it's wrapping an actual
-    # quoted/parenthetical SENTENCE, which is rare enough here not to be
-    # worth distinguishing; closing punctuation of any kind reads as a
-    # deliberate ending, unlike a bare dash/bullet/colon/comma (checked
-    # separately below) or a reply with no closing character at all.
-    ends_properly = bool(last_line) and last_line[-1] in ".!?)\"'"
-    if not ends_properly and len(stripped) < 160:
-        # A short-to-medium reply whose last line doesn't end a sentence
-        # reads as cut off mid-thought - a genuinely long, complete reply
-        # (e.g. a full multi-item order summary ending on a "Total: AED
-        # X.XX" line) is left alone even without trailing punctuation,
-        # since that's a normal way for a summary to end.
+    stripped = text.strip()
+    if len(stripped) <= 6:
+        # "Here", "Ok", "-" etc. - too short to be a real, complete reply
+        # to anything in this domain.
         return _SAFE_FALLBACK_REPLY
     return text
 
