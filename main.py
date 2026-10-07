@@ -618,16 +618,25 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
     _apply_order_note(phone, order, note)
 
     # Safety net: if the gates above somehow didn't route this message as
-    # the door-number follow-up (e.g. the customer answered it in a later
-    # turn than expected) but the AI still recognized and extracted an
-    # address from it, save that cleaned text rather than losing it -
-    # still never saves the raw, possibly-paragraph-length message.
-    if (
-        address and order and order.get("delivery_lat") is not None
-        and not order.get("delivery_address_text") and not order.get("is_pickup")
-    ):
-        store.set_order_delivery_address_label(order["id"], address)
+    # the door-number follow-up, or detect_probable_address's keyword
+    # heuristic missed a real address (confirmed live: "Al wasl p562" - a
+    # real UAE street+plot address with no generic English address word -
+    # fell through completely undetected, leaving the order stuck in draft
+    # forever with no way to confirm) - but the AI still recognized and
+    # extracted an address from the message, save that cleaned text rather
+    # than losing it. Covers both: a pin already shared (only the door
+    # number was missing) and no pin at all (the whole address was typed
+    # and missed by the heuristic).
+    if address and order and not order.get("is_pickup") and not order.get("delivery_address_text"):
+        if order.get("delivery_lat") is not None:
+            store.set_order_delivery_address_label(order["id"], address)
+        else:
+            delivery_fee = compute_delivery_fee(order["subtotal"])
+            store.set_order_delivery_text(order["id"], address, delivery_fee)
+            order = store.get_order(order["id"])
         store.set_customer_address_text(phone, address)
+        if order["status"] != "awaiting_confirmation":
+            store.set_order_status(order["id"], "awaiting_confirmation")
 
     _send(phone, reply)
 

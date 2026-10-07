@@ -37,7 +37,23 @@ ADDRESS_KEYWORDS = {
     "street", "st.", "road", "rd.", "villa", "building", "bldg", "apartment", "apt", "flat",
     "near", "opposite", "behind", "next to", "area", "block", "floor", "tower", "avenue",
     "district", "sector", "house", "gate", "landmark",
+    # UAE-specific plot/unit/community shorthand and common area names - a
+    # real address like "Al Wasl P562" or "JVC S11 R12" has no generic
+    # English address word at all, so the original keyword list alone
+    # missed it entirely (confirmed live: a customer's typed address never
+    # got captured, the order stayed stuck in draft with no way to confirm).
+    "plot", "unit", "suite", "no.", "room", "community", "cluster",
+    "warehouse", "al wasl", "al quoz", "al barsha", "jvc", "jlt", "jbr",
+    "marina", "downtown", "deira", "bur dubai", "karama", "satwa", "discovery gardens",
+    "silicon oasis", "motor city", "sports city", "business bay", "dip", "dic",
 }
+
+# A plot/villa/unit number shorthand like "P562", "V12", "S11", "R12" -
+# a single letter directly followed by digits, common in UAE addresses but
+# not caught by any word in ADDRESS_KEYWORDS (confirmed live: "Al wasl
+# p562" fell through undetected). Checked as a regex, not a plain keyword,
+# since a bare single letter would false-positive on ordinary words.
+_PLOT_NUMBER_RE = re.compile(r"\b[a-z]\d{2,}\b", re.IGNORECASE)
 
 # A generic "what do you have?" question names no specific dish, so the
 # keyword search in search_catalog_for_message legitimately finds nothing -
@@ -183,16 +199,20 @@ Sure! I've added 2 Chicken Biryani (Full) to your order, extra spicy as requeste
 ITEMS: ADD id:482 qty:2
 NOTE: Extra spicy
 
-If the customer's message this turn contains their door/apartment/villa number and/or building name/landmark (they're \
-answering "could you share your door/apartment/villa number" or similar), add a THIRD trailer line starting with \
-exactly "ADDRESS:" followed by ONLY the clean address/location details extracted from their message - building name, \
-room/flat/villa number, floor, landmark - nothing else. Strip out anything that isn't actually part of the address: \
-if they also mention order items, say thanks, explain they already placed the order, or add other commentary in the \
-same message, leave all of that out of the ADDRESS line entirely (that part of their message, e.g. an item change, \
-is still handled normally via the ITEMS/NOTE lines - ADDRESS is only the pure location text). Example: customer \
-writes "I would like only one Ghee Masala Dosa. I have already placed the order. My building is Middle East \
-Building, Room No. 305, 3rd Floor. Please deliver it to my room thank you" -> ADDRESS: Middle East Building, Room \
-305, 3rd Floor (not the whole message). Omit the ADDRESS line entirely if this turn's message has no address/door \
+If the customer's message this turn contains delivery address information - either a FULL street address (e.g. \
+"Al Wasl P562", "Villa 12 Jumeirah 3", "JVC S11 R12" - UAE addresses are often just an area/street name plus a plot \
+or unit number, with no English address word like "street" or "villa" in them at all) when none has been given yet, \
+OR a door/apartment/villa number and/or building name/landmark (they're answering "could you share your door/\
+apartment/villa number" or similar) when a location pin was already shared - add a THIRD trailer line starting with \
+exactly "ADDRESS:" followed by ONLY the clean address/location details extracted from their message - area/street \
+name, plot/building name, room/flat/villa number, floor, landmark - nothing else. Strip out anything that isn't \
+actually part of the address: if they also mention order items, say thanks, explain they already placed the order, \
+or add other commentary in the same message, leave all of that out of the ADDRESS line entirely (that part of their \
+message, e.g. an item change, is still handled normally via the ITEMS/NOTE lines - ADDRESS is only the pure location \
+text). Examples: customer writes "I would like only one Ghee Masala Dosa. I have already placed the order. My \
+building is Middle East Building, Room No. 305, 3rd Floor. Please deliver it to my room thank you" -> ADDRESS: \
+Middle East Building, Room 305, 3rd Floor (not the whole message). Customer writes "Al wasl p562" as their delivery \
+address -> ADDRESS: Al Wasl P562. Omit the ADDRESS line entirely if this turn's message has no address/door \
 information in it.
 
 Menu context (items relevant to this conversation):
@@ -453,7 +473,8 @@ def detect_probable_address(message: str) -> bool:
         return False
     has_digit = any(ch.isdigit() for ch in lowered)
     has_address_word = any(word in lowered for word in ADDRESS_KEYWORDS)
-    return has_digit and has_address_word
+    has_plot_number = bool(_PLOT_NUMBER_RE.search(lowered))
+    return has_plot_number or (has_digit and has_address_word)
 
 
 _ITEMS_LINE_RE = re.compile(r"^ITEMS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
