@@ -167,6 +167,43 @@
 
   var fallbackChimeTimer = null;
 
+  // Browsers block audio.play()/new AudioContext() until the page has had
+  // at least one user gesture (click, tap, keypress, scroll) - a dashboard
+  // tab left open and untouched since this morning never gets one, so a
+  // real new-order ring went out completely silent even though the visual
+  // banner still showed. Unlock audio on the first interaction of ANY kind
+  // (not just a click on our own controls) so sound is ready well before a
+  // real order needs to ring - a near-silent play+pause on the actual
+  // ringtone element, which is enough to satisfy the browser's gesture
+  // requirement for all later .play() calls this page load.
+  var audioUnlocked = false;
+  function unlockAudio() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    var audio = document.getElementById('newOrderRingtone');
+    if (audio) {
+      var vol = audio.volume;
+      audio.volume = 0;
+      var p = audio.play();
+      if (p && p.then) {
+        p.then(function () { audio.pause(); audio.currentTime = 0; audio.volume = vol; })
+         .catch(function () { audio.volume = vol; });
+      } else {
+        audio.pause(); audio.currentTime = 0; audio.volume = vol;
+      }
+    }
+    try {
+      var AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) { var ctx = new AudioCtx(); if (ctx.state === 'suspended') ctx.resume(); }
+    } catch (e) { /* ignore */ }
+    ['click', 'keydown', 'touchstart', 'scroll', 'mousemove'].forEach(function (evt) {
+      document.removeEventListener(evt, unlockAudio);
+    });
+  }
+  ['click', 'keydown', 'touchstart', 'scroll', 'mousemove'].forEach(function (evt) {
+    document.addEventListener(evt, unlockAudio, { once: false, passive: true });
+  });
+
   function startRinging() {
     stopRinging();
     var audio = document.getElementById('newOrderRingtone');
@@ -193,10 +230,29 @@
     if (fallbackChimeTimer) { clearInterval(fallbackChimeTimer); fallbackChimeTimer = null; }
   }
 
+  // Flashing tab title - a backup signal for when the browser has blocked
+  // all audio outright (tab open since this morning, never clicked), so a
+  // new order is still noticeable from the taskbar/tab strip even silent.
+  var originalTitle = document.title;
+  var titleFlashTimer = null;
+  function startTitleFlash() {
+    stopTitleFlash();
+    var on = false;
+    titleFlashTimer = setInterval(function () {
+      document.title = on ? originalTitle : 'New order!';
+      on = !on;
+    }, 1000);
+  }
+  function stopTitleFlash() {
+    if (titleFlashTimer) { clearInterval(titleFlashTimer); titleFlashTimer = null; }
+    document.title = originalTitle;
+  }
+
   function closeBanner() {
     var banner = document.getElementById('newOrderBanner');
     if (banner) banner.classList.remove('open');
     stopRinging();
+    stopTitleFlash();
   }
 
   function showBanner(orders) {
@@ -240,6 +296,7 @@
     if (dismissBtn) dismissBtn.onclick = closeBanner;
     banner.classList.add('open');
     startRinging();
+    startTitleFlash();
   }
 
   function poll(lastSeen) {
