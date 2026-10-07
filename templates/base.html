@@ -144,12 +144,23 @@
   // demanding attention until the admin actually dismisses or accepts it.
   // Falls back to a synthesized two-tone chime (Web Audio API) if the mp3
   // can't play for any reason (blocked, failed to load, etc.) so the alert
-  // is never silent outright.
+  // is never silent outright. Shares one AudioContext (sharedAudioCtx,
+  // created lazily) across every call instead of a fresh one each time -
+  // a brand new AudioContext always starts suspended until a user gesture
+  // resumes THAT SPECIFIC instance, so creating a new one here on every
+  // chime defeated unlockAudio()'s resume() below, which only ever
+  // resumed its own now-discarded instance.
+  var sharedAudioCtx = null;
+  function getAudioCtx() {
+    var AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    if (!sharedAudioCtx) sharedAudioCtx = new AudioCtx();
+    return sharedAudioCtx;
+  }
   function fallbackChime() {
     try {
-      var AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      var ctx = new AudioCtx();
+      var ctx = getAudioCtx();
+      if (!ctx) return;
       [880, 1175].forEach(function (freq, i) {
         var osc = ctx.createOscillator();
         var gain = ctx.createGain();
@@ -193,8 +204,8 @@
       }
     }
     try {
-      var AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtx) { var ctx = new AudioCtx(); if (ctx.state === 'suspended') ctx.resume(); }
+      var ctx = getAudioCtx();
+      if (ctx && ctx.state === 'suspended') ctx.resume();
     } catch (e) { /* ignore */ }
     ['click', 'keydown', 'touchstart', 'scroll', 'mousemove'].forEach(function (evt) {
       document.removeEventListener(evt, unlockAudio);
