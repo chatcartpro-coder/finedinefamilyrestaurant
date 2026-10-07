@@ -104,15 +104,22 @@ pick one for them, and don't add anything to the order yet (no ITEMS: line this 
 item(s) from the list they want.
 - Many dishes come in Half and Full sizes, listed as separate menu entries (e.g. "Butter Chicken (Half)" / "Butter \
 Chicken (Full)"). If a customer orders a dish that has both sizes in the menu context, ask which size they want \
-before adding it - never guess. If a dish only has one size listed, don't offer a choice that doesn't exist.
+BEFORE anything else, including before any clarification hint below - size is what actually resolves which real \
+[id:N] to use, so it must be settled first. If a dish only has one size listed, don't offer a choice that doesn't \
+exist and move straight to any other clarification that applies.
 - Before finalizing a line item, check the clarification hints below for that specific item - if a hint applies \
-(e.g. spice level, which variety, sweetness), ask exactly that ONE question and nothing else in that message, then \
-wait for the answer before moving on. Never combine a clarifying question with the delivery/pickup or address ask \
-in the same message, even if the customer says they're done ordering - finish clarifying the item first, send that \
-as its own message, and only ask about delivery in a later message once the item is fully settled. Don't re-ask \
-something the customer already told you. If a customer's answer to a clarifying question is a short or unclear \
-reply (e.g. a typo or abbreviation you're not confident about), don't guess - briefly confirm what you understood \
-before proceeding (e.g. "Just to confirm - extra sweet, or something else?").
+(e.g. spice level, which variety, sweetness) AND size has already been resolved (or there's only one size), ask \
+exactly that ONE question and nothing else in that message, then wait for the answer before moving on. If a dish \
+needs BOTH a size choice and a clarification-hint answer, ask size first as its own message; only ask the \
+clarification-hint question once you have a specific sized [id:N] to attach it to - never skip straight to a \
+clarification question (like spice level) while size is still unresolved, and never fall back to treating the dish \
+as off-menu just because two questions were needed - it's still a real catalog item, size is the only thing \
+missing. Never combine a clarifying question with the delivery/pickup or address ask in the same message, even if \
+the customer says they're done ordering - finish clarifying the item first, send that as its own message, and only \
+ask about delivery in a later message once the item is fully settled. Don't re-ask something the customer already \
+told you. If a customer's answer to a clarifying question is a short or unclear reply (e.g. a typo or abbreviation \
+you're not confident about), don't guess - briefly confirm what you understood before proceeding (e.g. "Just to \
+confirm - extra sweet, or something else?").
 - If a customer asks for something not in the menu context at all (e.g. a snack, ice cream flavor, or dish that \
 isn't listed anywhere, not even a close variant), don't refuse it and don't ask them to call separately - ALWAYS \
 take the order anyway. Add it as a real line item on their order using an ADDITEM: trailer line (see CART UPDATES \
@@ -589,6 +596,27 @@ _ADDRESS_LINE_RE = re.compile(r"^ADDRESS:\s*(.*)$", re.IGNORECASE | re.MULTILINE
 # restaurant". Multiple entries separated by semicolons, same as ITEMS:.
 _ADDITEM_LINE_RE = re.compile(r"^ADDITEM:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _ADDITEM_ACTION_RE = re.compile(r'"([^"]+)"\s+qty:(\d+(?:\.\d+)?)', re.IGNORECASE)
+_SIZE_SUFFIX_RE = re.compile(r"\s*\((half|full)\)\s*$", re.IGNORECASE)
+
+
+def _match_real_catalog_item(name: str, allowed_items: dict) -> dict | None:
+    """If an ADDITEM: name unambiguously matches exactly one real item
+    shown this turn (see the ADDITEM: hard guard in _parse_cart_actions),
+    returns that item dict instead of treating it as off-catalog. Matches
+    the name ignoring a trailing "(Half)"/"(Full)" suffix on either side,
+    since that's exactly the case that was confirmed live to fail: a plain
+    "Butter Chicken" request matched against "Butter Chicken (Half)" /
+    "Butter Chicken (Full)" in the catalog. Returns None (stays
+    off-catalog) if zero or 2+ items match, since a 2+ match means size is
+    genuinely ambiguous and guessing one would be worse than asking."""
+    target = _SIZE_SUFFIX_RE.sub("", name).strip().lower()
+    if not target:
+        return None
+    matches = [
+        it for it in allowed_items.values()
+        if _SIZE_SUFFIX_RE.sub("", it["name"]).strip().lower() == target
+    ]
+    return matches[0] if len(matches) == 1 else None
 # Catches a reply claiming something was added to the order/cart
 # ("I've added 2 Chicken Dum Biryani to your order", "added to your cart",
 # "have added X") - used only when there's NO ITEMS: line at all, to
@@ -660,6 +688,23 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
             qty = float(qty_str)
             name = name.strip()
             if not name or qty <= 0:
+                continue
+            # Hard guard, not just a prompt instruction: confirmed live
+            # that "Butter Chicken" (a real item, listed as two sized
+            # variants "Butter Chicken (Half)"/"(Full)") got treated as
+            # off-catalog - the model asked a SPICE clarification, got an
+            # answer, then had no sized [id:N] to reference and fell back
+            # to ADDITEM entirely, even though the real item was shown in
+            # the menu context this very turn. If the ADDITEM name
+            # unambiguously matches exactly ONE real catalog item (ignoring
+            # a parenthetical size suffix), use that real item/price
+            # instead of silently treating it as off-menu. Genuinely
+            # ambiguous cases (2+ sized variants, name doesn't specify)
+            # fall through to ADDITEM as before, since guessing a size
+            # would be worse than asking.
+            catalog_match = _match_real_catalog_item(name, allowed_items)
+            if catalog_match:
+                actions.append({"action": "ADD", "item": catalog_match, "qty": qty})
                 continue
             # id=None marks this as off-catalog throughout the pipeline
             # (main.py's _apply_cart_actions/store.add_order_item) - price
