@@ -29,7 +29,7 @@
 <div class="panel">
   <h2>Orders ({{ orders_with_items|length }})</h2>
   <table>
-    <tr><th>ID</th><th>Phone</th><th>Status</th><th>Items</th><th>Type</th><th>Delivery Agent</th><th>Subtotal</th><th>Delivery</th><th>Total</th><th>Payment</th><th>Location</th><th>Placed</th><th></th></tr>
+    <tr><th>ID</th><th>Phone</th><th>Status</th><th>Items</th><th>Notes</th><th>Type</th><th>Delivery Agent</th><th>Subtotal</th><th>Delivery</th><th>Total</th><th>Payment</th><th>Location</th><th>Placed</th><th></th></tr>
     {% for o, items in orders_with_items %}
     <tr>
       <td><b>{{ o.order_code or ('#' ~ o.id) }}</b></td>
@@ -53,6 +53,7 @@
           {{ "%g"|format(it.qty) }}&times; {{ it.item_name_snapshot }}{{ ", " if not loop.last }}
         {% else %}<span class="muted">-</span>{% endfor %}
       </td>
+      <td>{% if o.notes %}<span class="badge badge-amber" title="{{ o.notes }}">{{ o.notes }}</span>{% else %}<span class="muted">-</span>{% endif %}</td>
       <td>
         {% if o.order_type == 'dine_in' %}<span class="badge badge-amber">Dine-in</span>
         {% elif o.order_type == 'pickup' or o.is_pickup %}<span class="badge badge-grey">Takeaway</span>
@@ -72,7 +73,7 @@
       <td>{% if o.status != 'draft' %}<a class="btn btn-outline" href="/admin/orders/{{ o.id }}/print" target="_blank">Print</a>{% endif %}</td>
     </tr>
     {% else %}
-    <tr><td colspan="13" class="muted">No orders in this range</td></tr>
+    <tr><td colspan="14" class="muted">No orders in this range</td></tr>
     {% endfor %}
   </table>
 </div>

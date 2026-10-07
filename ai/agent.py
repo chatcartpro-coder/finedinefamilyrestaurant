@@ -153,10 +153,19 @@ explicitly asking for MORE of it this turn, since re-adding it duplicates that l
 and can also incorrectly reopen an order that was already finalized for the customer to confirm. Only include an \
 item once the customer has clearly confirmed exactly what they want (size/variant already resolved per the \
 clarification-hints rule above) - don't add an item while a clarifying question about it is still open. This ITEMS \
-line is never shown to the customer and must be the very last line of your response, nothing after it. Example \
-response:
-Sure! I've added 2 Chicken Biryani (Full) to your order. Would you like a drink with that?
+line is never shown to the customer and must be the very last line of your response, nothing after it.
+
+If the customer gives a special preparation/handling request this turn that doesn't change WHAT they're ordering \
+(e.g. "make it extra crispy", "no onions", "no sambar, extra red chutney", "less sugar", "ring the doorbell twice") \
+- something the kitchen or delivery rider needs to know, not a menu substitution - add a SECOND trailer line right \
+after the ITEMS line, starting with exactly "NOTE:" followed by a short, clear instruction (your own words, not a \
+quote). This gets attached to the order for the restaurant staff to see on the receipt/dashboard - acknowledge the \
+request warmly in your reply same as you would anyway, but don't skip writing the NOTE line just because you \
+already said you'd do it in the reply text, since that line is what actually saves it. Omit the NOTE line entirely \
+(don't write "NOTE: none") if there's no new special request this turn. Example response:
+Sure! I've added 2 Chicken Biryani (Full) to your order, extra spicy as requested. Would you like a drink with that?
 ITEMS: ADD id:482 qty:2
+NOTE: Extra spicy
 
 Menu context (items relevant to this conversation):
 {catalog_context}
@@ -421,21 +430,25 @@ def detect_probable_address(message: str) -> bool:
 
 _ITEMS_LINE_RE = re.compile(r"^ITEMS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _ITEMS_ACTION_RE = re.compile(r"(ADD|REMOVE)\s+id:(\d+)\s+qty:(\d+(?:\.\d+)?)", re.IGNORECASE)
+_NOTE_LINE_RE = re.compile(r"^NOTE:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 
 
-def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list]:
-    """Splits the AI's raw response into (customer_facing_text, actions).
-    The ITEMS: trailer line (see SYSTEM_PROMPT_TEMPLATE's "CART UPDATES"
-    section) is stripped out entirely before anything is sent to the
-    customer - it's a machine-readable instruction to this code, never
-    customer-visible. `allowed_items` is {id: item_dict} for exactly the
-    catalog items shown to the model THIS turn (see generate_reply) - an
-    action referencing any other id is dropped, so the model can never
-    cause an item the customer didn't actually see offered to be added to
-    their order, even if it hallucinates an id."""
+def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list, str | None]:
+    """Splits the AI's raw response into (customer_facing_text, actions,
+    note). The ITEMS:/NOTE: trailer lines (see SYSTEM_PROMPT_TEMPLATE's
+    "CART UPDATES" section) are stripped out entirely before anything is
+    sent to the customer - they're machine-readable instructions to this
+    code, never customer-visible. `allowed_items` is {id: item_dict} for
+    exactly the catalog items shown to the model THIS turn (see
+    generate_reply) - an action referencing any other id is dropped, so the
+    model can never cause an item the customer didn't actually see offered
+    to be added to their order, even if it hallucinates an id. `note` is
+    the special-request text (e.g. "extra crispy", "no sambar, extra red
+    chutney") to attach to the order via storage.store.add_order_note, or
+    None if the model didn't include a NOTE: line this turn."""
     match = _ITEMS_LINE_RE.search(raw_reply)
     if not match:
-        return raw_reply.strip(), []
+        return raw_reply.strip(), [], None
 
     text = raw_reply[:match.start()].rstrip()
     actions = []
@@ -445,14 +458,23 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list]
         if item_id not in allowed_items or qty <= 0:
             continue
         actions.append({"action": verb.upper(), "item": allowed_items[item_id], "qty": qty})
-    return text, actions
+
+    note = None
+    note_match = _NOTE_LINE_RE.search(raw_reply, match.end())
+    if note_match:
+        note_text = note_match.group(1).strip()
+        if note_text and note_text.lower() != "none":
+            note = note_text
+
+    return text, actions, note
 
 
-def generate_reply(customer_message: str, order: dict | None, order_items: list, customer: dict | None = None, history: list = None) -> tuple[str, list]:
-    """Returns (reply_text, cart_actions) - cart_actions is a list of
+def generate_reply(customer_message: str, order: dict | None, order_items: list, customer: dict | None = None, history: list = None) -> tuple[str, list, str | None]:
+    """Returns (reply_text, cart_actions, note) - cart_actions is a list of
     {"action": "ADD"|"REMOVE", "item": <catalog item dict>, "qty": float},
     already validated against the catalog items shown to the model this
-    turn (see _parse_cart_actions). Replaces the old regex-based
+    turn, and note is a special-request string to attach to the order (or
+    None) - see _parse_cart_actions. Replaces the old regex-based
     _apply_cart_updates in main.py entirely: the AI itself decides what to
     add/remove, grounded in the exact menu context it was shown, instead of
     a second independent guesser risking a different (possibly wrong) item

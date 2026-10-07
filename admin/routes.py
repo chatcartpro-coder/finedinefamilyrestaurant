@@ -282,6 +282,7 @@ def orders_new_since(since: str = "", admin=Depends(get_current_admin)):
                 "order_type": store.order_type_label(o),
                 "total": o["total"],
                 "phone": o["phone"],
+                "notes": o.get("notes"),
             }
             for o in new_orders
         ],

@@ -11,15 +11,27 @@
 <body>
 {% import "partials/icons.html" as icons %}
 
+<audio id="newOrderRingtone" src="/static/audio/new-order-ringtone.mp3" loop preload="auto"></audio>
+
 <div class="new-order-banner" id="newOrderBanner">
-  <div>
+  <div class="call-card">
+    <div class="ring-icon">
+      <div class="pulse"></div>
+      <div class="pulse delay1"></div>
+      <div class="pulse delay2"></div>
+      <div class="core">🔔</div>
+    </div>
+    <div class="eyebrow">Incoming order</div>
     <div class="text" id="newOrderText">New order received!</div>
     <div class="sub" id="newOrderSub"></div>
-  </div>
-  <div class="actions">
-    <button type="button" id="newOrderPrintBtn" style="display:none;">Print</button>
-    <button type="button" onclick="window.location.href='/admin/orders'">View orders</button>
-    <button type="button" class="dismiss" onclick="document.getElementById('newOrderBanner').classList.remove('open')">&times;</button>
+    <div class="notes-line" id="newOrderNotes" style="display:none;"></div>
+    <div class="actions">
+      <div class="row">
+        <button type="button" class="accept-btn" onclick="window.location.href='/admin/orders'">View order</button>
+        <button type="button" id="newOrderPrintBtn" style="display:none;">Print</button>
+      </div>
+      <button type="button" class="dismiss" id="newOrderDismissBtn">Dismiss</button>
+    </div>
   </div>
 </div>
 
@@ -126,12 +138,18 @@
     try { localStorage.setItem(STORAGE_KEY, value); } catch (e) { /* storage unavailable, ignore */ }
   }
 
-  function beep() {
+  // Looping ringtone (static/audio/new-order-ringtone.mp3, looped via the
+  // <audio> element's loop attribute) plays while the call screen is open,
+  // like an incoming call, instead of a single beep - so the alert keeps
+  // demanding attention until the admin actually dismisses or accepts it.
+  // Falls back to a synthesized two-tone chime (Web Audio API) if the mp3
+  // can't play for any reason (blocked, failed to load, etc.) so the alert
+  // is never silent outright.
+  function fallbackChime() {
     try {
       var AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
       var ctx = new AudioCtx();
-      // Two short rising tones, like a simple register "ding-ding".
       [880, 1175].forEach(function (freq, i) {
         var osc = ctx.createOscillator();
         var gain = ctx.createGain();
@@ -139,26 +157,74 @@
         osc.frequency.value = freq;
         var start = ctx.currentTime + i * 0.18;
         gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(0.3, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.35, start + 0.02);
         gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
         osc.connect(gain); gain.connect(ctx.destination);
         osc.start(start); osc.stop(start + 0.18);
       });
-    } catch (e) { /* audio blocked (e.g. no user interaction yet) - alert still shows visually */ }
+    } catch (e) { /* audio blocked entirely - alert still shows visually */ }
+  }
+
+  var fallbackChimeTimer = null;
+
+  function startRinging() {
+    stopRinging();
+    var audio = document.getElementById('newOrderRingtone');
+    if (audio) {
+      audio.currentTime = 0;
+      var playPromise = audio.play();
+      if (playPromise && playPromise.catch) {
+        playPromise.catch(function () {
+          // Autoplay blocked (e.g. no user interaction yet this page load) -
+          // fall back to the synthesized chime, repeating every ~2s.
+          fallbackChime();
+          fallbackChimeTimer = setInterval(fallbackChime, 2000);
+        });
+      }
+    } else {
+      fallbackChime();
+      fallbackChimeTimer = setInterval(fallbackChime, 2000);
+    }
+  }
+
+  function stopRinging() {
+    var audio = document.getElementById('newOrderRingtone');
+    if (audio) { audio.pause(); audio.currentTime = 0; }
+    if (fallbackChimeTimer) { clearInterval(fallbackChimeTimer); fallbackChimeTimer = null; }
+  }
+
+  function closeBanner() {
+    var banner = document.getElementById('newOrderBanner');
+    if (banner) banner.classList.remove('open');
+    stopRinging();
   }
 
   function showBanner(orders) {
     var banner = document.getElementById('newOrderBanner');
     var text = document.getElementById('newOrderText');
     var sub = document.getElementById('newOrderSub');
+    var notesLine = document.getElementById('newOrderNotes');
     var printBtn = document.getElementById('newOrderPrintBtn');
+    var dismissBtn = document.getElementById('newOrderDismissBtn');
     if (!banner || !text || !sub) return;
     if (orders.length === 1) {
-      text.textContent = 'New order ' + orders[0].ref + ' received!';
+      text.textContent = 'Order ' + orders[0].ref;
       sub.textContent = orders[0].order_type + ' - {{ currency }} ' + orders[0].total.toFixed(2);
     } else {
-      text.textContent = orders.length + ' new orders received!';
+      text.textContent = orders.length + ' new orders';
       sub.textContent = orders.map(function (o) { return o.ref; }).join(', ');
+    }
+    // Show any special-request note (ai/agent.py's NOTE: trailer) front and
+    // center - this is exactly the kind of thing staff need to catch before
+    // starting prep (e.g. "no sambar, extra red chutney").
+    if (notesLine) {
+      var withNotes = orders.filter(function (o) { return o.notes; });
+      if (withNotes.length > 0) {
+        notesLine.textContent = '📝 ' + withNotes.map(function (o) { return o.notes; }).join(' | ');
+        notesLine.style.display = '';
+      } else {
+        notesLine.style.display = 'none';
+      }
     }
     // Print button opens a print-ready receipt for the most recent order in
     // this batch (same tab-opening approach regardless of 1 vs several
@@ -168,10 +234,12 @@
       printBtn.style.display = '';
       printBtn.onclick = function () {
         window.open('/admin/orders/' + latestOrder.id + '/print', '_blank');
+        closeBanner();
       };
     }
+    if (dismissBtn) dismissBtn.onclick = closeBanner;
     banner.classList.add('open');
-    beep();
+    startRinging();
   }
 
   function poll(lastSeen) {

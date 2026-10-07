@@ -147,9 +147,16 @@ def _write_receipt(printer, order: dict, store_name: str, currency: str):
     if order.get("order_type") == "dine_in":
         printer.text("-" * 32 + "\n")
         printer.text("DINE-IN - prepare for the customer at the restaurant.\n")
-    elif order.get("delivery_address_text"):
+    elif order.get("delivery_address_text") or order.get("delivery_lat") is not None:
+        # A customer can share their address as typed text
+        # (delivery_address_text) or a WhatsApp location pin (delivery_lat/
+        # lng) - a pin with no label previously printed nothing at all here,
+        # same bug fixed on the WhatsApp receipt and browser-print template.
         printer.text("-" * 32 + "\n")
-        printer.text(f"Deliver to: {order['delivery_address_text']}\n")
+        if order.get("delivery_address_text"):
+            printer.text(f"Deliver to: {order['delivery_address_text']}\n")
+        if order.get("delivery_lat") is not None:
+            printer.text(f"Map: https://maps.google.com/?q={order['delivery_lat']},{order['delivery_lng']}\n")
     if order.get("notes"):
         printer.text(f"Notes: {order['notes']}\n")
 

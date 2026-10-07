@@ -68,9 +68,10 @@
 {% if order.order_type == 'dine_in' %}
 <div class="divider"></div>
 <div>DINE-IN - prepare for the customer at the restaurant.</div>
-{% elif order.delivery_address_text %}
+{% elif order.delivery_address_text or order.delivery_lat is not none %}
 <div class="divider"></div>
-<div>Deliver to: {{ order.delivery_address_text }}</div>
+{% if order.delivery_address_text %}<div>Deliver to: {{ order.delivery_address_text }}</div>{% endif %}
+{% if order.delivery_lat is not none %}<div>Map: https://maps.google.com/?q={{ order.delivery_lat }},{{ order.delivery_lng }}</div>{% endif %}
 {% endif %}
 {% if order.notes %}<div>Notes: {{ order.notes }}</div>{% endif %}
 

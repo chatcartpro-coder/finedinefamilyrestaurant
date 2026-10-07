@@ -264,8 +264,9 @@ def _apply_delivery_location(phone: str, order: dict, lat: float, lng: float, la
 
     customer = store.get_customer(phone)
     order_items = store.get_order_items(order["id"])
-    reply, actions = generate_reply("I've shared my delivery location.", order, order_items, customer=customer, history=store.get_recent_history(phone))
+    reply, actions, note = generate_reply("I've shared my delivery location.", order, order_items, customer=customer, history=store.get_recent_history(phone))
     order = _apply_cart_actions(phone, order, actions)
+    order = _apply_order_note(phone, order, note)
     escalation_note = ""
     if "confirm" not in reply.lower():
         escalation_note = (
@@ -294,11 +295,12 @@ def _apply_delivery_text_address(phone: str, order: dict, address_text: str):
 
     customer = store.get_customer(phone)
     order_items = store.get_order_items(order["id"])
-    reply, actions = generate_reply(
+    reply, actions, note = generate_reply(
         f"I'll deliver to this address: {address_text}", order, order_items,
         customer=customer, history=store.get_recent_history(phone),
     )
     order = _apply_cart_actions(phone, order, actions)
+    order = _apply_order_note(phone, order, note)
     escalation_note = ""
     if "confirm" not in reply.lower():
         escalation_note = (
@@ -528,9 +530,10 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
     order_items = store.get_order_items(order["id"]) if order else []
     customer = store.get_customer(phone)
     history = store.get_recent_history(phone, limit=10)
-    reply, actions = generate_reply(text, order, order_items, customer=customer, history=history)
+    reply, actions, note = generate_reply(text, order, order_items, customer=customer, history=history)
 
-    _apply_cart_actions(phone, order, actions)
+    order = _apply_cart_actions(phone, order, actions)
+    _apply_order_note(phone, order, note)
 
     _send(phone, reply)
 
@@ -545,8 +548,9 @@ def _prompt_final_confirmation(phone: str, order: dict):
     is_dine_in = order.get("order_type") == "dine_in"
     synthetic_message = "I'll dine in at the restaurant." if is_dine_in else "I'll pick it up myself."
     label = "dine-in - no delivery fee" if is_dine_in else "pickup - no delivery fee"
-    reply, actions = generate_reply(synthetic_message, order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
+    reply, actions, note = generate_reply(synthetic_message, order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
     order = _apply_cart_actions(phone, order, actions) or order
+    order = _apply_order_note(phone, order, note) or order
     # _apply_cart_actions reverts an awaiting_confirmation order back to
     # draft if it changes the cart (see its docstring) - this function's
     # whole point is presenting the final total for confirmation, so put it
@@ -682,6 +686,25 @@ def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict |
     return store.get_order(order["id"]) if order else None
 
 
+def _apply_order_note(phone: str, order: dict | None, note: str | None) -> dict | None:
+    """Attaches a special-request note the AI picked up this turn (see
+    ai/agent.py's generate_reply + CART UPDATES prompt section) to the
+    active order, creating a draft order first if there isn't one yet (a
+    customer can give a prep instruction before naming any items, e.g.
+    "make sure it's not too spicy" as their very first message). Unlike
+    _apply_cart_actions, attaching a note never reverts an
+    awaiting_confirmation order back to draft - it's metadata for the
+    kitchen/rider, not a change to what's being charged, so it shouldn't
+    reopen a total the customer is about to confirm."""
+    if not note:
+        return order
+    if not order or order["status"] not in ("draft", "awaiting_confirmation"):
+        order_id = store.create_order(phone)
+        order = store.get_order(order_id)
+    store.add_order_note(order["id"], note)
+    return store.get_order(order["id"])
+
+
 def _format_whatsapp_receipt(order: dict, items: list) -> str:
     """Itemized order confirmation, sent to the customer over WhatsApp the
     moment their order is confirmed. Prices are VAT-inclusive (see
@@ -713,9 +736,23 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
     elif order.get("is_pickup"):
         lines.append("")
         lines.append("This is a pickup order - please collect it from the restaurant.")
-    elif order.get("delivery_address_text"):
+    elif order.get("delivery_address_text") or order.get("delivery_lat") is not None:
+        # A customer can share their address two ways - a typed text address
+        # (delivery_address_text) or a WhatsApp location pin (delivery_lat/
+        # lng, with delivery_address_text only set if they also gave it a
+        # label). Previously this only checked delivery_address_text, so a
+        # pin-shared address with no label silently never appeared on the
+        # receipt at all - confirmed live (receipt showed no address despite
+        # a real location pin being shared and confirmed in the chat).
         lines.append("")
-        lines.append(f"Deliver to: {order['delivery_address_text']}")
+        if order.get("delivery_address_text"):
+            lines.append(f"Deliver to: {order['delivery_address_text']}")
+        if order.get("delivery_lat") is not None:
+            lines.append(f"Map: https://maps.google.com/?q={order['delivery_lat']},{order['delivery_lng']}")
+
+    if order.get("notes"):
+        lines.append("")
+        lines.append(f"Notes: {order['notes']}")
 
     lines.append("")
     lines.append(f"Thank you for ordering from {config.STORE_NAME}!")

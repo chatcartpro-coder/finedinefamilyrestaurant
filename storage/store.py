@@ -538,6 +538,25 @@ def set_order_status(order_id: int, status: str):
     conn.commit()
 
 
+def add_order_note(order_id: int, note: str):
+    """Appends a special-request/preparation note (e.g. "extra crispy",
+    "no sambar, extra red chutney") to an order - appended rather than
+    overwritten, since a customer can add several notes across a
+    conversation. Shown on the WhatsApp receipt, printed receipt, and
+    Orders admin page (main.py's generate_reply + CART UPDATES prompt
+    section is what actually captures these from the conversation)."""
+    conn = _get_conn()
+    cur = conn.execute("SELECT notes FROM orders WHERE id = ?", (order_id,))
+    row = cur.fetchone()
+    existing = (row[0] if row else None) or ""
+    note = note.strip()
+    if not note:
+        return
+    combined = f"{existing}; {note}" if existing else note
+    conn.execute("UPDATE orders SET notes = ? WHERE id = ?", (combined, order_id))
+    conn.commit()
+
+
 def assign_delivery_agent(order_id: int, agent_phone: str):
     conn = _get_conn()
     conn.execute("UPDATE orders SET delivery_agent_phone = ? WHERE id = ?", (agent_phone, order_id))
