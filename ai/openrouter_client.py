@@ -34,29 +34,42 @@ _RETRYABLE_400_MARKERS = ("not a valid model id", "model not found")
 def _call_model(messages, model: str, temperature: float, max_tokens: int) -> str:
     """Raises OpenRouterError on any failure - callers decide whether that's
     retryable (see _RETRYABLE_STATUS_CODES) or should propagate immediately."""
-    resp = requests.post(
-        f"{config.OPENROUTER_BASE_URL}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "X-Title": f"{config.STORE_NAME} WhatsApp Agent",
-        },
-        json={
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        },
-        # A model that's about to fail (429/empty content) responds almost
-        # instantly - this timeout mainly matters for a model that hangs
-        # instead of failing fast. Lowered from 30s: confirmed live that a
-        # customer waited through 2+ models failing in sequence before a
-        # working one was reached, and the full fallback chain (5 models)
-        # could take minutes at 30s each in the worst case. 15s still gives
-        # a genuinely slow-but-working model room to respond, while capping
-        # how long a hung model can delay the whole chain.
-        timeout=15,
-    )
+    try:
+        resp = requests.post(
+            f"{config.OPENROUTER_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "X-Title": f"{config.STORE_NAME} WhatsApp Agent",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            # A model that's about to fail (429/empty content) responds almost
+            # instantly - this timeout mainly matters for a model that hangs
+            # instead of failing fast. Lowered from 30s: confirmed live that a
+            # customer waited through 2+ models failing in sequence before a
+            # working one was reached, and the full fallback chain (5 models)
+            # could take minutes at 30s each in the worst case. 15s still gives
+            # a genuinely slow-but-working model room to respond, while capping
+            # how long a hung model can delay the whole chain.
+            timeout=15,
+        )
+    except requests.exceptions.RequestException as e:
+        # A network-level failure (timeout, connection error, DNS issue)
+        # raises its own exception type, never reaching the status-code
+        # check below - confirmed live: a ReadTimeout crashed straight
+        # through chat_completion's "except OpenRouterError" (which never
+        # catches it) and fell all the way out to main.py's generic error
+        # handler, completely skipping the fallback chain even though
+        # other models were available and untried. Wrapping it as an
+        # OpenRouterError (with no status code, so it's treated as
+        # retryable by default - see _extract_status_code) lets the normal
+        # fallback logic handle it like any other failure.
+        raise OpenRouterError(f"OpenRouter request failed for model '{model}': {e}") from e
 
     if resp.status_code != 200:
         raise OpenRouterError(f"OpenRouter error {resp.status_code}: {resp.text}")
