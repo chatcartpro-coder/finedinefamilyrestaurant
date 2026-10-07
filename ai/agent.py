@@ -166,6 +166,10 @@ can order.
 - Never say an order is placed/confirmed yourself - only the system marks an order confirmed after the customer \
 replies to that exact prompt. If asked "is my order confirmed?", check the order status context below and answer \
 truthfully.
+- CRITICAL: never tell the customer you've "added" something to their order unless you are ALSO writing a real \
+ITEMS: ADD line for it this same turn - the two must always match. If you're asking a clarifying question (e.g. \
+which biryani, which size) and haven't added anything yet, say so plainly and don't claim otherwise. Saying \
+something was added when it wasn't is a serious error - it's better to ask again than to falsely confirm.
 - Keep replies under 100 words unless summarizing a full order requires more.
 
 CART UPDATES - read carefully, this is how items actually get added to the order:
@@ -500,6 +504,18 @@ _ITEMS_LINE_RE = re.compile(r"^ITEMS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _ITEMS_ACTION_RE = re.compile(r"(ADD|REMOVE)\s+id:(\d+)\s+qty:(\d+(?:\.\d+)?)", re.IGNORECASE)
 _NOTE_LINE_RE = re.compile(r"^NOTE:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _ADDRESS_LINE_RE = re.compile(r"^ADDRESS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+# Catches a reply claiming something was added to the order/cart
+# ("I've added 2 Chicken Dum Biryani to your order", "added to your cart",
+# "have added X") - used only when there's NO ITEMS: line at all, to
+# detect a hallucinated confirmation with nothing real behind it (see
+# _parse_cart_actions). Deliberately requires "to your/the order/cart" or
+# a number right after "added" to avoid false-triggering on an unrelated
+# use of the word (e.g. "we added extra spice to our menu").
+_CLAIMS_ADDED_RE = re.compile(
+    r"\b(i'?ve|i have|have) added\b.{0,40}?\b(to (your |the )?(order|cart))\b"
+    r"|\badded \d+\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list, str | None, str | None]:
@@ -524,7 +540,21 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
     Floor". None if the model didn't include an ADDRESS: line this turn."""
     match = _ITEMS_LINE_RE.search(raw_reply)
     if not match:
-        return raw_reply.strip(), [], None, None
+        text = raw_reply.strip()
+        if _CLAIMS_ADDED_RE.search(text):
+            # Hard guard, not just a prompt instruction: confirmed live that
+            # the model can write a confident "I've added 2 Chicken Dum
+            # Biryani to your order" sentence while completely omitting the
+            # ITEMS: trailer line - no action was ever applied (verified
+            # directly against the database: the order stayed empty), but
+            # the customer was told a false confirmation and had no way to
+            # know their item was never actually added. Since there's no
+            # ITEMS: line to recover a real action from, replace the
+            # hallucinated claim with an honest re-ask rather than pass it
+            # through - telling the customer something was added when it
+            # wasn't is worse than asking again.
+            text = "Sorry, could you confirm exactly what you'd like to order? I want to make sure I get it right."
+        return text, [], None, None
 
     text = raw_reply[:match.start()].rstrip()
     actions = []
