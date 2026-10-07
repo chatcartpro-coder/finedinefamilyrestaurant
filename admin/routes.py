@@ -357,8 +357,9 @@ async def catalog_import(request: Request, admin=Depends(get_current_admin), fil
 
     error = None
     count = 0
+    skipped = []
     try:
-        count = import_file(tmp_path, source="excel")
+        count, skipped = import_file(tmp_path, source="excel")
     except Exception as e:
         error = str(e)
     finally:
@@ -366,10 +367,14 @@ async def catalog_import(request: Request, admin=Depends(get_current_admin), fil
 
     items = catalog_store.list_items()
     last_synced = catalog_store.last_synced_at()
+    import_message = f"Imported/updated {count} item(s)." if not error else None
+    if skipped:
+        skipped_text = "; ".join(f"row {n}: {reason}" for n, reason in skipped)
+        import_message = f"{import_message} Skipped {len(skipped)} row(s) - {skipped_text}"
     return render(
         request, "catalog.html", active_page="catalog", admin=admin,
         items=items, last_synced=last_synced, q="",
-        import_message=f"Imported/updated {count} item(s)." if not error else None,
+        import_message=import_message,
         import_error=error,
     )
 

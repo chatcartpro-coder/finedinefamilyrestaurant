@@ -23,13 +23,21 @@ def _normalize_key(header) -> str:
     return str(header).strip().lower().replace(" ", "_")
 
 
-def import_file(path: str, source: str = "excel") -> int:
+def import_file(path: str, source: str = "excel") -> tuple[int, list]:
+    """Returns (count_imported, skipped_rows) - skipped_rows is a list of
+    (row_number, reason) for any row that wasn't imported, so a bad/blank
+    cell shows up as a visible warning on the admin page instead of
+    silently zeroing out a real item's price. Confirmed live: a row with a
+    blank or non-numeric Price cell previously got coerced straight to
+    0.0 with upsert_item() overwriting the existing price unconditionally
+    on every re-import - a live menu item could go from a real price to
+    AED 0.00 from one re-upload with no error shown anywhere."""
     wb = load_workbook(path, data_only=True)
     ws = wb.active
 
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
-        return 0
+        return 0, []
 
     headers = [_normalize_key(h) for h in rows[0]]
     missing = REQUIRED_COLUMNS - set(headers)
@@ -40,19 +48,27 @@ def import_file(path: str, source: str = "excel") -> int:
         )
 
     count = 0
-    for raw_row in rows[1:]:
+    skipped = []
+    for row_num, raw_row in enumerate(rows[1:], start=2):
         if raw_row is None or all(v is None for v in raw_row):
             continue
         record = dict(zip(headers, raw_row))
 
         name = str(record.get("name") or "").strip()
         if not name:
+            skipped.append((row_num, "missing item name"))
             continue
 
+        price_raw = record.get("price")
         try:
-            price = float(record.get("price") or 0)
+            price = float(price_raw)
         except (TypeError, ValueError):
-            price = 0.0
+            skipped.append((row_num, f"'{name}': invalid/blank price ({price_raw!r}) - kept existing price, not overwritten"))
+            continue
+        if price < 0:
+            skipped.append((row_num, f"'{name}': negative price ({price_raw!r}) - kept existing price, not overwritten"))
+            continue
+
         try:
             stock_qty = float(record.get("stock_qty") or 0)
         except (TypeError, ValueError):
@@ -68,7 +84,7 @@ def import_file(path: str, source: str = "excel") -> int:
         )
         count += 1
 
-    return count
+    return count, skipped
 
 
 def main():
@@ -76,8 +92,10 @@ def main():
         print("Usage: python -m catalog.excel_import path/to/file.xlsx")
         sys.exit(1)
     path = sys.argv[1]
-    count = import_file(path)
+    count, skipped = import_file(path)
     print(f"Imported/updated {count} catalog item(s) from {path}")
+    for row_num, reason in skipped:
+        print(f"  SKIPPED row {row_num}: {reason}")
 
 
 if __name__ == "__main__":
