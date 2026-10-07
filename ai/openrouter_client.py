@@ -62,9 +62,19 @@ def _call_model(messages, model: str, temperature: float, max_tokens: int) -> st
         raise OpenRouterError(f"OpenRouter returned non-JSON response: {resp.text[:500]}") from e
 
     try:
-        return data["choices"][0]["message"]["content"].strip()
+        content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as e:
         raise OpenRouterError(f"Unexpected OpenRouter response: {data}") from e
+
+    # Some free-tier models return HTTP 200 with content: null/"" under load
+    # or moderation - confirmed live (AttributeError crashing the whole
+    # request instead of falling back). Treat this the same as any other
+    # retryable failure so chat_completion's fallback chain moves on to the
+    # next model instead of taking the bot down.
+    if not content or not content.strip():
+        raise OpenRouterError(f"OpenRouter model '{model}' returned empty content (choices[0].message.content was null/blank)")
+
+    return content.strip()
 
 
 def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 600, model: str = None) -> str:
