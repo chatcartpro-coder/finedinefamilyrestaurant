@@ -604,7 +604,50 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
                 "id": cid, "name": oi["item_name_snapshot"],
                 "price": oi["unit_price_snapshot"], "in_stock": True,
             }
-    return _parse_cart_actions(raw_reply, allowed_items)
+    text, actions, note, address = _parse_cart_actions(raw_reply, allowed_items)
+    actions = _correct_single_add_quantity(customer_message, actions)
+    return text, actions, note, address
+
+
+_LEADING_QTY_RE = re.compile(r"^(\d{1,2})\b")
+_NUMBER_WORDS = {
+    "a": 1, "an": 1, "one": 1, "single": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+
+def _extract_stated_quantity(message: str) -> int | None:
+    """Pulls an unambiguous quantity straight from the customer's own words
+    - a leading digit ("1 chicken biryani", "2 cokes") or number word ("a
+    biryani", "two cokes"). Returns None if nothing clear is found, so the
+    caller leaves the AI's own qty alone rather than guessing wrong."""
+    lowered = message.strip().lower()
+    digit_match = _LEADING_QTY_RE.match(lowered)
+    if digit_match:
+        return int(digit_match.group(1))
+    first_word = lowered.split()[0] if lowered.split() else ""
+    return _NUMBER_WORDS.get(first_word)
+
+
+def _correct_single_add_quantity(customer_message: str, actions: list) -> list:
+    """Hard override, not just a prompt instruction: a free-tier model has
+    been confirmed live to ignore an explicit prompt rule and add the wrong
+    quantity (customer said "1 chicken dum biriyani", model added qty 2,
+    then repeated the same wrong qty even after the customer corrected it
+    to "1 biriyani"). Only applies when there's exactly ONE ADD action this
+    turn and the customer's message clearly states a quantity - multi-item
+    messages ("2 biryani and 3 cokes") are left alone since a single
+    leading number can't be safely attributed to a specific item among
+    several."""
+    add_actions = [a for a in actions if a["action"] == "ADD"]
+    if len(add_actions) != 1 or len(actions) != 1:
+        return actions
+    stated_qty = _extract_stated_quantity(customer_message)
+    if stated_qty is None or stated_qty == actions[0]["qty"]:
+        return actions
+    corrected = dict(actions[0])
+    corrected["qty"] = float(stated_qty)
+    return [corrected]
 
 
 def _guess_dish_name_from_image(image_bytes: bytes, mime_type: str, caption: str = "") -> str:
