@@ -85,7 +85,10 @@ as its own message, and only ask about delivery in a later message once the item
 something the customer already told you. If a customer's answer to a clarifying question is a short or unclear \
 reply (e.g. a typo or abbreviation you're not confident about), don't guess - briefly confirm what you understood \
 before proceeding (e.g. "Just to confirm - extra sweet, or something else?").
-- If an item is marked NOT AVAILABLE or isn't in the menu, say so plainly and suggest a similar available dish.
+- If a customer asks for something marked NOT AVAILABLE, or a dish/flavor/variant that isn't in the menu context at \
+all (e.g. they ask for "Pista ice cream" but only "Mixed Ice Cream" is listed), say plainly that it's not available \
+and suggest the closest real item(s) from the menu context instead - never invent a dish, flavor, or price that \
+isn't listed, and never add it to the order.
 - If a customer asks the price of a dish, state it clearly from the menu context, and add one brief, genuine \
 reason to order it (e.g. "it's one of our most popular biryanis") - never invent a claim not reasonably inferable \
 from the menu, and never be pushy about it.
@@ -136,6 +139,21 @@ replies to that exact prompt. If asked "is my order confirmed?", check the order
 truthfully.
 - Keep replies under 100 words unless summarizing a full order requires more.
 
+CART UPDATES - read carefully, this is how items actually get added to the order:
+After your reply to the customer, on a new line, add a line starting with exactly "ITEMS:" followed by one entry \
+per item to ADD or REMOVE this turn, separated by semicolons. Format each entry as "ADD id:N qty:Q" or \
+"REMOVE id:N qty:Q" (qty for REMOVE is how many to take off, not the new total), using the exact [id:N] shown \
+either in the menu context below or the customer's current order below - NEVER invent an id, and NEVER use an id \
+that isn't shown in one of those two places this turn. If the customer named something not in the menu context, do \
+NOT emit an ITEMS line for it - just say it's unavailable in your reply (per the rule above). If nothing should be \
+added or removed this turn (e.g. you're just answering a question, or still waiting on a clarifying answer), write \
+"ITEMS: none". Only include an item once the customer has clearly confirmed exactly what they want (size/variant \
+already resolved per the clarification-hints rule above) - don't add an item while a clarifying question about it \
+is still open. This ITEMS line is never shown to the customer and must be the very last line of your response, \
+nothing after it. Example response:
+Sure! I've added 2 Chicken Biryani (Full) to your order. Would you like a drink with that?
+ITEMS: ADD id:482 qty:2
+
 Menu context (items relevant to this conversation):
 {catalog_context}
 
@@ -160,7 +178,11 @@ def _format_catalog_context(items: list, categories: list = None) -> str:
         parts = []
         for it in items:
             availability = "available" if it["in_stock"] else "NOT AVAILABLE"
-            parts.append(f"- {it['name']}: {config.CURRENCY} {it['price']:.2f} - {availability}")
+            # [id:N] is required so generate_reply() can parse exact,
+            # unambiguous ITEMS: action lines back out of the AI's reply -
+            # never match by name text, which is how a wrong/hallucinated
+            # item got added to a real customer's cart before this change.
+            parts.append(f"- [id:{it['id']}] {it['name']}: {config.CURRENCY} {it['price']:.2f} - {availability}")
         return "\n".join(parts)
     if categories:
         return (
@@ -174,7 +196,11 @@ def _format_catalog_context(items: list, categories: list = None) -> str:
 def _format_cart_context(order: dict | None, items: list) -> str:
     if not order or not items:
         return "(Empty - no items added yet.)"
-    lines = [f"- {i['qty']:g} x {i['item_name_snapshot']} @ {config.CURRENCY} {i['unit_price_snapshot']:.2f} = {config.CURRENCY} {i['line_total']:.2f}" for i in items]
+    lines = [
+        f"- [id:{i['catalog_item_id']}] {i['qty']:g} x {i['item_name_snapshot']} @ "
+        f"{config.CURRENCY} {i['unit_price_snapshot']:.2f} = {config.CURRENCY} {i['line_total']:.2f}"
+        for i in items
+    ]
     lines.append(f"Subtotal: {config.CURRENCY} {order['subtotal']:.2f}")
     return "\n".join(lines)
 
@@ -301,22 +327,37 @@ def _format_operating_hours_context() -> str:
     )
 
 
-def search_catalog_for_message(message: str, top_k: int = 8) -> list:
-    """Very simple keyword-based menu matching: try the whole message, and
-    fall back to individual significant words. Good enough for a
-    single-restaurant menu of a few hundred items."""
+def search_catalog_for_message(message: str, top_k: int = 16) -> list:
+    """Very simple keyword-based menu matching: try the whole message, then
+    each line (for multi-line orders like "Vanilla 2\nMango 1\nPista 1"),
+    then individual significant words. Good enough for a single-restaurant
+    menu of a few hundred items. top_k raised from 8 to 16 by default so a
+    multi-line order doesn't get starved of context for later lines -
+    generate_reply() is what actually grounds the AI's item choices, so
+    under-including real candidates here risks the AI being unable to find
+    a legitimate match even though the item exists."""
     results = catalog_store.search_items(message, limit=top_k)
     if results:
         return results
 
-    words = [w for w in re.findall(r"[a-zA-Z]{3,}", message) if w.lower() not in {"the", "and", "for", "with"}]
     seen_ids = set()
     combined = []
-    for w in words:
-        for item in catalog_store.search_items(w, limit=4):
+
+    def _add(candidates):
+        for item in candidates:
             if item["id"] not in seen_ids:
                 seen_ids.add(item["id"])
                 combined.append(item)
+
+    lines = [ln.strip() for ln in message.splitlines() if ln.strip()]
+    if len(lines) > 1:
+        for line in lines:
+            _add(catalog_store.search_items(line, limit=4))
+
+    words = [w for w in re.findall(r"[a-zA-Z]{3,}", message) if w.lower() not in {"the", "and", "for", "with"}]
+    for w in words:
+        _add(catalog_store.search_items(w, limit=4))
+
     return combined[:top_k]
 
 
@@ -370,7 +411,44 @@ def detect_probable_address(message: str) -> bool:
     return has_digit and has_address_word
 
 
-def generate_reply(customer_message: str, order: dict | None, order_items: list, customer: dict | None = None, history: list = None) -> str:
+_ITEMS_LINE_RE = re.compile(r"^ITEMS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_ITEMS_ACTION_RE = re.compile(r"(ADD|REMOVE)\s+id:(\d+)\s+qty:(\d+(?:\.\d+)?)", re.IGNORECASE)
+
+
+def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list]:
+    """Splits the AI's raw response into (customer_facing_text, actions).
+    The ITEMS: trailer line (see SYSTEM_PROMPT_TEMPLATE's "CART UPDATES"
+    section) is stripped out entirely before anything is sent to the
+    customer - it's a machine-readable instruction to this code, never
+    customer-visible. `allowed_items` is {id: item_dict} for exactly the
+    catalog items shown to the model THIS turn (see generate_reply) - an
+    action referencing any other id is dropped, so the model can never
+    cause an item the customer didn't actually see offered to be added to
+    their order, even if it hallucinates an id."""
+    match = _ITEMS_LINE_RE.search(raw_reply)
+    if not match:
+        return raw_reply.strip(), []
+
+    text = raw_reply[:match.start()].rstrip()
+    actions = []
+    for verb, id_str, qty_str in _ITEMS_ACTION_RE.findall(match.group(1)):
+        item_id = int(id_str)
+        qty = float(qty_str)
+        if item_id not in allowed_items or qty <= 0:
+            continue
+        actions.append({"action": verb.upper(), "item": allowed_items[item_id], "qty": qty})
+    return text, actions
+
+
+def generate_reply(customer_message: str, order: dict | None, order_items: list, customer: dict | None = None, history: list = None) -> tuple[str, list]:
+    """Returns (reply_text, cart_actions) - cart_actions is a list of
+    {"action": "ADD"|"REMOVE", "item": <catalog item dict>, "qty": float},
+    already validated against the catalog items shown to the model this
+    turn (see _parse_cart_actions). Replaces the old regex-based
+    _apply_cart_updates in main.py entirely: the AI itself decides what to
+    add/remove, grounded in the exact menu context it was shown, instead of
+    a second independent guesser risking a different (possibly wrong) item
+    from what the AI told the customer was added."""
     catalog_items = search_catalog_for_message(customer_message)
     # A generic "what's on the menu?" question names no specific dish, so
     # the keyword search above legitimately finds nothing - fall back to
@@ -403,7 +481,19 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         messages.append({"role": role, "content": text})
     messages.append({"role": "user", "content": customer_message})
 
-    return chat_completion(messages)
+    raw_reply = chat_completion(messages)
+    # Also allow removing an item already in the cart even if this turn's
+    # catalog search didn't happen to re-surface it (e.g. "remove the
+    # appam" after the conversation moved on to other dishes).
+    allowed_items = {it["id"]: it for it in catalog_items}
+    for oi in order_items or []:
+        cid = oi.get("catalog_item_id")
+        if cid is not None and cid not in allowed_items:
+            allowed_items[cid] = {
+                "id": cid, "name": oi["item_name_snapshot"],
+                "price": oi["unit_price_snapshot"], "in_stock": True,
+            }
+    return _parse_cart_actions(raw_reply, allowed_items)
 
 
 def _guess_dish_name_from_image(image_bytes: bytes, mime_type: str, caption: str = "") -> str:

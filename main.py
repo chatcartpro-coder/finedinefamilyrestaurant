@@ -7,7 +7,6 @@ development) and set the resulting URL as your webhook in Meta's App Dashboard
 under WhatsApp > Configuration, together with WHATSAPP_VERIFY_TOKEN from .env.
 """
 import logging
-import re
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
@@ -19,7 +18,7 @@ from admin.temp_reset import router as temp_reset_router  # TEMP: remove after u
 from ai.agent import (
     compute_delivery_fee, detect_confirmation_intent, detect_delivery_preference,
     detect_probable_address, detect_reuse_saved_address, generate_image_reply, generate_reply,
-    is_accepting_orders, operating_hours_label, search_catalog_for_message,
+    is_accepting_orders, operating_hours_label,
 )
 from ai.voice import TranscriptionError, transcribe
 from catalog import store as catalog_store
@@ -265,7 +264,8 @@ def _apply_delivery_location(phone: str, order: dict, lat: float, lng: float, la
 
     customer = store.get_customer(phone)
     order_items = store.get_order_items(order["id"])
-    reply = generate_reply("I've shared my delivery location.", order, order_items, customer=customer, history=store.get_recent_history(phone))
+    reply, actions = generate_reply("I've shared my delivery location.", order, order_items, customer=customer, history=store.get_recent_history(phone))
+    order = _apply_cart_actions(phone, order, actions)
     escalation_note = ""
     if "confirm" not in reply.lower():
         escalation_note = (
@@ -294,10 +294,11 @@ def _apply_delivery_text_address(phone: str, order: dict, address_text: str):
 
     customer = store.get_customer(phone)
     order_items = store.get_order_items(order["id"])
-    reply = generate_reply(
+    reply, actions = generate_reply(
         f"I'll deliver to this address: {address_text}", order, order_items,
         customer=customer, history=store.get_recent_history(phone),
     )
+    order = _apply_cart_actions(phone, order, actions)
     escalation_note = ""
     if "confirm" not in reply.lower():
         escalation_note = (
@@ -527,9 +528,9 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
     order_items = store.get_order_items(order["id"]) if order else []
     customer = store.get_customer(phone)
     history = store.get_recent_history(phone, limit=10)
-    reply = generate_reply(text, order, order_items, customer=customer, history=history)
+    reply, actions = generate_reply(text, order, order_items, customer=customer, history=history)
 
-    _apply_cart_updates(phone, text, order)
+    _apply_cart_actions(phone, order, actions)
 
     _send(phone, reply)
 
@@ -544,7 +545,16 @@ def _prompt_final_confirmation(phone: str, order: dict):
     is_dine_in = order.get("order_type") == "dine_in"
     synthetic_message = "I'll dine in at the restaurant." if is_dine_in else "I'll pick it up myself."
     label = "dine-in - no delivery fee" if is_dine_in else "pickup - no delivery fee"
-    reply = generate_reply(synthetic_message, order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
+    reply, actions = generate_reply(synthetic_message, order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
+    order = _apply_cart_actions(phone, order, actions) or order
+    # _apply_cart_actions reverts an awaiting_confirmation order back to
+    # draft if it changes the cart (see its docstring) - this function's
+    # whole point is presenting the final total for confirmation, so put it
+    # back to awaiting_confirmation regardless (synthetic messages here
+    # shouldn't normally trigger cart actions, but stay correct if one does).
+    if order["status"] != "awaiting_confirmation":
+        store.set_order_status(order["id"], "awaiting_confirmation")
+        order = store.get_order(order["id"])
     escalation_note = ""
     if "confirm" not in reply.lower():
         escalation_note = (
@@ -589,80 +599,24 @@ def _push_invoice_best_effort(order: dict, items: list):
         logger.exception("Billing invoice push failed for order #%s (non-fatal)", order["id"])
 
 
-_UNIT_WORDS = {"x", "pcs", "pc", "piece", "pieces", "plate", "plates", "no", "nos", "qty"}
 
 
-def _apply_cart_updates(phone: str, text: str, order: dict | None):
-    """Very lightweight structured extraction: looks for 'qty item' patterns
-    in the customer's message and adds matching in-stock menu items to the
-    active (or new) draft order. Deliberately simple for v1 - a
-    structured-JSON OpenRouter call is the natural upgrade path here since
-    free-text orders (especially with half/full size choices) are far more
-    variable than this regex covers.
+def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict | None:
+    """Applies the ADD/REMOVE actions the AI returned alongside its reply
+    (see ai/agent.py's generate_reply + CART UPDATES prompt section).
+    Replaces the old regex-based item guesser entirely: the AI already
+    decided exactly what to add/remove, grounded in the precise menu
+    context it was shown and validated server-side against those same ids
+    (ai/agent.py's _parse_cart_actions) - this function's only job is to
+    apply those decisions to the database, with no guessing of its own.
+    Returns the (possibly newly-created) order, or the original order if no
+    actions were given."""
+    if not actions:
+        return order
 
-    This only ever fires on a message written (at least partly) in Latin
-    script - item names in this menu are all Latin/English, so a message in
-    another script (e.g. Tamil "அப்பம் 2 pcs") can't name a real dish in a
-    way this regex can see. Previously, the digit+optional-unit-word part of
-    such a message (e.g. just "2 pcs" surviving after the non-Latin dish
-    name was skipped) could itself match the regex, with "pcs" captured as
-    the item phrase and matched via substring search against unrelated menu
-    items whose name happens to contain "pcs" (e.g. "Dinner Meal (3pcs)") -
-    confirmed live. Adding an item from a bare unit word, or from a phrase
-    too short/generic to plausibly name a specific dish, is now rejected
-    outright; the AI's own cart summary (shown in every reply) is the
-    source of truth for what's actually in the order, this regex is only a
-    best-effort assist for the common "2 biryani" case."""
-    matches = re.findall(r"(\d+(?:\.\d+)?)\s*(?:x|pcs|pieces|plate|plates)?\s*([a-zA-Z][a-zA-Z\s]{2,40})", text)
-    if not matches:
-        return
-
-    for qty_str, item_phrase in matches:
-        item_phrase = item_phrase.strip()
-        if not item_phrase:
-            continue
-        # Reject a bare unit word (e.g. "pcs", "plate") as the item name -
-        # it's leftover regex noise, never an actual dish, and must not be
-        # used as a catalog search query (see docstring).
-        if item_phrase.lower() in _UNIT_WORDS:
-            continue
-        # Reject anything too short to plausibly identify a specific dish -
-        # guards against other short/generic fragments matching unrelated
-        # items by coincidental substring overlap.
-        if len(item_phrase) < 4:
-            continue
-        try:
-            qty = float(qty_str)
-        except ValueError:
-            continue
-        if qty <= 0:
-            continue
-
-        # Pull several candidates rather than just one - search_catalog_for_
-        # message's word-by-word fallback returns whatever it finds first
-        # per word, not the best overall match (confirmed live: "chicken
-        # biryani" returned "Afghani Chicken (Full)" as candidate #1, since
-        # "chicken" alone was searched before "biryani"). Score every
-        # candidate by real word overlap with what the customer typed and
-        # keep the best one, instead of trusting result order.
-        candidates = search_catalog_for_message(item_phrase, top_k=8)
-        if not candidates:
-            continue
-        phrase_words = {w for w in item_phrase.lower().split() if len(w) >= 3}
-
-        def _overlap(candidate):
-            item_words = {w.strip("()") for w in candidate["name"].lower().split() if len(w) >= 3}
-            return len(phrase_words & item_words)
-
-        item = max(candidates, key=_overlap)
-        if not item["in_stock"]:
-            continue
-        # Require the matched item's name to actually share a real word with
-        # what the customer typed, not just an arbitrary substring - e.g.
-        # "pcs" inside "Dinner Meal (3pcs)" would still fail this since
-        # "pcs" isn't a standalone word in the item name's word-split form.
-        if phrase_words and _overlap(item) == 0:
-            continue
+    for change in actions:
+        item = change["item"]
+        qty = change["qty"]
 
         if not order or order["status"] not in ("draft", "awaiting_confirmation"):
             order_id = store.create_order(phone)
@@ -673,7 +627,24 @@ def _apply_cart_updates(phone: str, text: str, order: dict | None):
             store.set_order_status(order["id"], "draft")
             order = store.get_order(order["id"])
 
-        store.add_order_item(order["id"], item["id"], item["name"], item["price"], qty)
+        if change["action"] == "ADD":
+            if not item.get("in_stock", True):
+                continue
+            store.add_order_item(order["id"], item["id"], item["name"], item["price"], qty)
+        else:  # REMOVE
+            existing = [i for i in store.get_order_items(order["id"]) if i["catalog_item_id"] == item["id"]]
+            remaining = qty
+            for row in existing:
+                if remaining <= 0:
+                    break
+                if row["qty"] <= remaining:
+                    store.remove_order_item(row["id"])
+                    remaining -= row["qty"]
+                else:
+                    store.set_order_item_qty(row["id"], row["qty"] - remaining)
+                    remaining = 0
+
+    return store.get_order(order["id"]) if order else None
 
 
 def _format_whatsapp_receipt(order: dict, items: list) -> str:

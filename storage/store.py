@@ -380,6 +380,22 @@ def remove_order_item(item_id: int):
     _recalc_order_totals(order_id)
 
 
+def set_order_item_qty(item_id: int, qty: float):
+    """Updates an existing order_items row's quantity (and line_total) in
+    place - used for a partial REMOVE (e.g. 3 in cart, customer says "remove
+    1"), as opposed to remove_order_item's full-row delete."""
+    conn = _get_conn()
+    cur = conn.execute("SELECT order_id, unit_price_snapshot FROM order_items WHERE id = ?", (item_id,))
+    row = cur.fetchone()
+    if not row:
+        return
+    order_id, unit_price = row
+    line_total = round(unit_price * qty, 2)
+    conn.execute("UPDATE order_items SET qty = ?, line_total = ? WHERE id = ?", (qty, line_total, item_id))
+    conn.commit()
+    _recalc_order_totals(order_id)
+
+
 def _recalc_order_totals(order_id: int):
     """Recomputes subtotal/total from line items. If a discount offer is
     already applied (discount_applied), re-derives its amount via
