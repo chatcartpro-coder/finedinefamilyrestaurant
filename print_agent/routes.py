@@ -7,12 +7,38 @@ _admin_auth_redirect exception handler (which redirects browser requests to
 /admin/login on a 401 - wrong behavior for a headless script client, which
 wants a plain JSON 401 it can check and retry/log).
 """
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends
 
+from config import config
 from print_agent.auth import require_print_agent_token
 from storage import store
 
 router = APIRouter(prefix="/print-agent")
+
+
+def _to_local_iso(value: str) -> str:
+    """Converts a stored UTC ISO timestamp to the restaurant's local time
+    (STORE_TIMEZONE), still as an ISO string - same conversion as
+    admin/templating.py's local_time Jinja filter, duplicated here (rather
+    than imported) since print_agent/agent.py is a standalone script with
+    no Jinja/web-app dependencies and just displays whatever it's given.
+    Confirmed live: the printed thermal receipt showed raw UTC
+    (e.g. "08:14") while the dashboard correctly showed local time
+    ("12:14", UAE is UTC+4) - the standalone script had no timezone
+    conversion at all, unlike every web-rendered page. Falls back to the
+    raw value if it can't be parsed, same as the Jinja filter does."""
+    if not value:
+        return value
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ZoneInfo(config.STORE_TIMEZONE)).isoformat()
+    except (ValueError, TypeError):
+        return value
 
 
 @router.get("/orders/pending")
@@ -46,7 +72,7 @@ def _serialize_order(order: dict) -> dict:
         "order_code": store.order_ref(order),
         "phone": order["phone"],
         "customer_name": customer.get("name") if customer else None,
-        "confirmed_at": order["confirmed_at"],
+        "confirmed_at": _to_local_iso(order["confirmed_at"]),
         "order_type": order.get("order_type"),
         "order_type_label": store.order_type_label(order),
         "subtotal": order["subtotal"],

@@ -120,6 +120,11 @@ def _write_receipt(printer, order: dict, store_name: str, currency: str):
 
     printer.set(align="left")
     printer.text(f"Order: {order.get('order_code') or '#' + str(order['id'])}\n")
+    # confirmed_at here is already converted to the restaurant's local time
+    # by the server (print_agent/routes.py's _serialize_order), not raw UTC -
+    # confirmed live the receipt printed 4 hours behind the dashboard
+    # (which does the same conversion via admin/templating.py's local_time
+    # Jinja filter) before this was added.
     printer.text(f"Confirmed: {(order['confirmed_at'] or '')[:16].replace('T', ' ')}\n")
     if order.get("customer_name"):
         printer.text(f"Customer: {order['customer_name']}\n")
