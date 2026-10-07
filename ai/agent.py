@@ -162,6 +162,12 @@ truthfully.
 - Keep replies under 100 words unless summarizing a full order requires more.
 
 CART UPDATES - read carefully, this is how items actually get added to the order:
+Quantity: use EXACTLY the number the customer stated this turn, nothing else - "1 chicken biryani" means qty:1, \
+"chicken biryani" with no number stated means qty:1 (never default to 2 or any other number), "2 chicken biryani" \
+means qty:2. Re-read the customer's exact words before writing the qty value - do not round up, double, or guess a \
+"typical" order size. If a number is genuinely ambiguous (e.g. unclear if it's a quantity or part of a dish name), \
+ask a brief clarifying question instead of guessing.
+
 After your reply to the customer, on a new line, add a line starting with exactly "ITEMS:" followed by one entry \
 per item to ADD or REMOVE this turn, separated by semicolons. Format each entry as "ADD id:N qty:Q" or \
 "REMOVE id:N qty:Q" (qty for REMOVE is how many to take off, not the new total), using the exact [id:N] shown \
