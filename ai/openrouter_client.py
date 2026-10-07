@@ -47,7 +47,15 @@ def _call_model(messages, model: str, temperature: float, max_tokens: int) -> st
             "temperature": temperature,
             "max_tokens": max_tokens,
         },
-        timeout=30,
+        # A model that's about to fail (429/empty content) responds almost
+        # instantly - this timeout mainly matters for a model that hangs
+        # instead of failing fast. Lowered from 30s: confirmed live that a
+        # customer waited through 2+ models failing in sequence before a
+        # working one was reached, and the full fallback chain (5 models)
+        # could take minutes at 30s each in the worst case. 15s still gives
+        # a genuinely slow-but-working model room to respond, while capping
+        # how long a hung model can delay the whole chain.
+        timeout=15,
     )
 
     if resp.status_code != 200:
