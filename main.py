@@ -7,6 +7,7 @@ development) and set the resulting URL as your webhook in Meta's App Dashboard
 under WhatsApp > Configuration, together with WHATSAPP_VERIFY_TOKEN from .env.
 """
 import logging
+import re
 from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
@@ -29,6 +30,13 @@ from whatsapp.client import WhatsAppError, download_media, mark_as_read, send_te
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("finedine-agent")
+
+# Matches the AI's confirmation-escalation phrasing ("Reply CONFIRM to
+# place the order or CANCEL to change it") - used in handle_customer_message
+# to detect when the AI is telling the customer to confirm, so the backend
+# can arm awaiting_confirmation to match (see the hard guard there for why
+# this is necessary, not just a prompt-following assumption).
+REPLY_CONFIRM_RE = re.compile(r"\breply\s+confirm\b", re.IGNORECASE)
 
 app = FastAPI(title=f"{config.STORE_NAME} WhatsApp AI Agent")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -637,6 +645,28 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
         store.set_customer_address_text(phone, address)
         if order["status"] != "awaiting_confirmation":
             store.set_order_status(order["id"], "awaiting_confirmation")
+
+    # Hard guard, not a prompt fix: confirmed live that the AI's generic
+    # reply can present a final-total message ending in "Reply CONFIRM to
+    # place the order" (e.g. after a REMOVE put the order back to draft,
+    # per _apply_cart_actions) WITHOUT the backend ever arming
+    # awaiting_confirmation - so the customer's next literal "Confirm"
+    # correctly matched nothing (order["status"] == "awaiting_confirmation"
+    # gate never true), fell through to this same generic path again, and
+    # the order could never actually be confirmed - a real customer was
+    # stuck typing CONFIRM repeatedly with the bot acknowledging but never
+    # placing it. If the AI is telling the customer to reply CONFIRM, and
+    # the order genuinely has what it needs (real items, and either no
+    # delivery needed or an address already captured), arm the status to
+    # match what the AI just told the customer, so their next CONFIRM
+    # actually works.
+    if (
+        order and order["status"] == "draft" and REPLY_CONFIRM_RE.search(reply)
+        and store.get_order_items(order["id"])
+        and (order.get("is_pickup") or order.get("order_type") == "dine_in"
+             or order.get("delivery_lat") is not None or order.get("delivery_address_text"))
+    ):
+        store.set_order_status(order["id"], "awaiting_confirmation")
 
     _send(phone, reply)
 
