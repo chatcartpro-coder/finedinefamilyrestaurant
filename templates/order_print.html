@@ -69,7 +69,7 @@
 <div class="row total-row"><span>TOTAL</span><span>{{ currency }} {{ "%.2f"|format(order.total) }}</span></div>
 <div class="muted">(incl. VAT {{ currency }} {{ "%.2f"|format(vat_amount) }}, excl. VAT {{ currency }} {{ "%.2f"|format(amount_excl_vat) }})</div>
 {% if items|selectattr("catalog_item_id", "none")|list %}
-<div class="muted">Total excludes item(s) with price TBD - call {{ config.STORE_PHONE or "+971042847471" }} to confirm</div>
+<div class="muted">Total excludes item(s) with price TBD - call {{ config.STORE_PHONE or "+97142847471" }} to confirm</div>
 {% endif %}
 
 {% if order.order_type == 'dine_in' %}

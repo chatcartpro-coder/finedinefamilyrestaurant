@@ -914,7 +914,7 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
         lines.append("Discount applied")
     lines.append(f"Total: {config.CURRENCY} {order['total']:.2f}")
     if off_catalog_items:
-        lines.append(f"(Total excludes item(s) with price TBD - call {config.STORE_PHONE or '+971042847471'} to check)")
+        lines.append(f"(Total excludes item(s) with price TBD - call {config.STORE_PHONE or '+97142847471'} to check)")
     excl_vat, vat_amount = vat_breakdown(order["total"])
     lines.append(f"(incl. VAT {config.CURRENCY} {vat_amount:.2f} - amount excl. VAT: {config.CURRENCY} {excl_vat:.2f})")
 
@@ -948,6 +948,7 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
 
     lines.append("")
     lines.append(f"Thank you for ordering from {config.STORE_NAME}!")
+    lines.append(f"For delivery follow-up, call {config.STORE_PHONE or '+97142847471'}")
     return "\n".join(lines)
 
 
