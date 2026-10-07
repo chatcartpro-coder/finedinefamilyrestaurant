@@ -54,6 +54,7 @@ import argparse
 import logging
 import os
 import sys
+import textwrap
 import time
 
 import requests
@@ -173,7 +174,22 @@ def _write_receipt(printer, order: dict, store_name: str, currency: str):
         if order.get("delivery_lat") is not None:
             printer.text(f"Map: https://maps.google.com/?q={order['delivery_lat']},{order['delivery_lng']}\n")
     if order.get("notes"):
-        printer.text(f"Notes: {order['notes']}\n")
+        # Notes accumulate across a conversation as "Extra spicy; No
+        # onions; Ring doorbell twice" (storage.store.add_order_note) - a
+        # printer.text() of the whole string as one line either runs off
+        # the receipt or hard-wraps mid-word on 80mm paper (~32 chars/line
+        # for the standard font), since python-escpos doesn't word-wrap
+        # for you. Splits back into individual notes and wraps each one
+        # cleanly at word boundaries instead, as a short bulleted list -
+        # far more readable for kitchen/delivery staff on a narrow ticket.
+        printer.text("Notes:\n")
+        for note in order["notes"].split("; "):
+            note = note.strip()
+            if not note:
+                continue
+            wrapped = textwrap.wrap(note, width=30, initial_indent="- ", subsequent_indent="  ")
+            for line in wrapped:
+                printer.text(f"{line}\n")
 
     printer.text("\n")
     printer.cut()

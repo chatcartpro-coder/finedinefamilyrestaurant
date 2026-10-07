@@ -910,7 +910,11 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
 
     if order.get("notes"):
         lines.append("")
-        lines.append(f"Notes: {order['notes']}")
+        lines.append("Notes:")
+        for note in order["notes"].split("; "):
+            note = note.strip()
+            if note:
+                lines.append(f"- {note}")
 
     lines.append("")
     lines.append(f"Thank you for ordering from {config.STORE_NAME}!")

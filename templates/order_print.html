@@ -80,7 +80,12 @@
 {% if order.delivery_address_text %}<div>Deliver to: {{ order.delivery_address_text }}</div>{% endif %}
 {% if order.delivery_lat is not none %}<div>Map: https://maps.google.com/?q={{ order.delivery_lat }},{{ order.delivery_lng }}</div>{% endif %}
 {% endif %}
-{% if order.notes %}<div>Notes: {{ order.notes }}</div>{% endif %}
+{% if order.notes %}
+<div>Notes:</div>
+{% for note in order.notes.split("; ") %}
+  {% if note.strip() %}<div style="padding-left:10px;">- {{ note.strip() }}</div>{% endif %}
+{% endfor %}
+{% endif %}
 
 <div class="divider"></div>
 <div class="center">Thank you for ordering from {{ store_name }}!</div>
