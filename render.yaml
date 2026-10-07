@@ -27,9 +27,9 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: ~google/gemini-flash-latest
+        value: ~openai/gpt-luna-latest
       - key: OPENROUTER_FALLBACK_MODELS
-        value: "google/gemma-4-26b-a4b-it:free,google/gemma-4-31b-it:free"
+        value: "~google/gemini-flash-latest,google/gemma-4-26b-a4b-it:free,google/gemma-4-31b-it:free"
       - key: OPENROUTER_VISION_MODEL
         sync: false
       - key: WHISPER_API_KEY
