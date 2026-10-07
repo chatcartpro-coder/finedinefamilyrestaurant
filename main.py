@@ -257,14 +257,41 @@ def _process_location_message(phone: str, lat, lng, label: str, message_id: str)
 
 
 def _apply_delivery_location(phone: str, order: dict, lat: float, lng: float, label: str):
+    """A shared location pin only places a rider at a building, not a
+    specific unit - always require a door/apartment/villa number as text
+    before moving to confirmation (never let a pin alone satisfy delivery
+    info), so the printed/WhatsApp receipt and the delivery agent's
+    notification always have a readable address, not just a map link."""
     delivery_fee = compute_delivery_fee(order["subtotal"])
-    store.set_order_delivery(order["id"], lat, lng, delivery_fee, label)
+    # Pass address_text=None (not the WhatsApp pin's own label, e.g. "Home")
+    # so delivery_address_text stays empty and needs_door_number in
+    # handle_customer_message correctly still asks for the door number.
+    store.set_order_delivery(order["id"], lat, lng, delivery_fee, None)
+    order = store.get_order(order["id"])
+    _send(
+        phone,
+        "Got your location! One more thing - could you share your door/apartment/villa number and any landmark, "
+        "so the rider can find you exactly? (e.g. \"Villa 12, near the mosque\" or \"Flat 304, Marina Tower\")",
+    )
+
+
+def _apply_delivery_address_label(phone: str, order: dict, address_text: str):
+    """Follow-up to _apply_delivery_location: attaches the door/unit number
+    text the customer sends after sharing a pin, WITHOUT touching the
+    coordinates already saved (see storage.store.set_order_delivery_address_label).
+    This is what actually unblocks needs_delivery_address and moves the
+    order to awaiting_confirmation - a pin by itself never does."""
+    store.set_order_delivery_address_label(order["id"], address_text)
+    store.set_customer_address_text(phone, address_text)
     order = store.get_order(order["id"])
     store.set_order_status(order["id"], "awaiting_confirmation")
 
     customer = store.get_customer(phone)
     order_items = store.get_order_items(order["id"])
-    reply, actions, note = generate_reply("I've shared my delivery location.", order, order_items, customer=customer, history=store.get_recent_history(phone))
+    reply, actions, note = generate_reply(
+        f"My door/unit number is: {address_text}", order, order_items,
+        customer=customer, history=store.get_recent_history(phone),
+    )
     order = _apply_cart_actions(phone, order, actions)
     order = _apply_order_note(phone, order, note)
     escalation_note = ""
@@ -501,6 +528,17 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
         order and store.get_order_items(order["id"]) and not order.get("is_pickup")
         and order.get("delivery_lat") is None and not order.get("delivery_address_text")
     )
+    # A pin was shared (or reused) but the door/unit number follow-up hasn't
+    # landed yet - the order is still not ready for confirmation, so route
+    # the customer's very next message as that door number rather than
+    # letting it fall through to the generic AI reply below.
+    needs_door_number = (
+        order and store.get_order_items(order["id"]) and not order.get("is_pickup")
+        and order.get("delivery_lat") is not None and not order.get("delivery_address_text")
+    )
+    if needs_door_number:
+        _apply_delivery_address_label(phone, order, text)
+        return
     if needs_delivery_address:
         preference = detect_delivery_preference(text)
         if preference == "pickup":
@@ -518,7 +556,13 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
         has_saved_address = customer and (customer.get("last_lat") is not None or customer.get("last_address_text"))
         if has_saved_address and detect_reuse_saved_address(text):
             if customer.get("last_lat") is not None:
+                # Reusing a saved pin still needs a door number confirmed -
+                # if we also have a saved text label from a past order, skip
+                # re-asking and attach it directly; otherwise ask again.
                 _apply_delivery_location(phone, order, customer["last_lat"], customer["last_lng"], customer.get("last_location_label"))
+                if customer.get("last_address_text"):
+                    order = store.get_order(order["id"])
+                    _apply_delivery_address_label(phone, order, customer["last_address_text"])
             else:
                 _apply_delivery_text_address(phone, order, customer["last_address_text"])
             return

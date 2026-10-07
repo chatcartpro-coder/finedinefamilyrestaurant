@@ -440,6 +440,19 @@ def set_order_delivery(order_id: int, lat: float, lng: float, delivery_fee: floa
     conn.commit()
 
 
+def set_order_delivery_address_label(order_id: int, address_text: str):
+    """Attaches/updates the door-/unit-number text label on an order that
+    already has a location pin (delivery_lat/lng) set - unlike
+    set_order_delivery, this does NOT touch the coordinates, delivery_fee,
+    or total, since those were already correctly set when the pin was
+    shared. A pin alone only places a rider at a building, not a specific
+    unit, so this is the door/apartment/villa number collected as a
+    required follow-up (see main.py's _apply_delivery_location)."""
+    conn = _get_conn()
+    conn.execute("UPDATE orders SET delivery_address_text = ? WHERE id = ?", (address_text, order_id))
+    conn.commit()
+
+
 def set_order_delivery_text(order_id: int, address_text: str, delivery_fee: float):
     """Sibling to set_order_delivery for customers who type their address as
     plain text instead of sharing a WhatsApp location pin - delivery_lat/lng

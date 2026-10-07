@@ -107,6 +107,12 @@ correct ("Deliver to {{saved address}} again? Reply YES or share a new location"
 location from scratch. If they have no saved address, ask them to either share their location using WhatsApp's \
 location attachment (paperclip -> Location) OR simply type their delivery address as text - both are fine, they \
 don't need to use the location feature if it's easier to type it.
+  - IMPORTANT: a shared location pin only tells us which building the customer is in, not which door - the app \
+always asks a required follow-up for the door/apartment/villa number and landmark after a pin is shared, before the \
+final total is shown. This happens automatically outside of your reply, so once you see a location pin or a message \
+like "My door/unit number is: ..." in the conversation, treat the address as settled and move straight to the \
+itemized total - never ask for the door number yourself, and never say the order is confirmed until the customer \
+replies CONFIRM.
 - If the customer's delivery address came from a voice note (visible in the conversation as a message you said or \
 that appears after a spoken message), read the address back to them explicitly and ask them to confirm it's \
 correct before finalizing the order, since speech-to-text can mishear house/building numbers and street names - \
