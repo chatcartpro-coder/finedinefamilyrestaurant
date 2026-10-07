@@ -74,6 +74,29 @@ def list_categories(in_stock_only: bool = True) -> list:
     return [row[0] for row in cur.fetchall()]
 
 
+def list_items_by_category(category: str, in_stock_only: bool = True) -> list:
+    """All items in one exact category (case-insensitive), name order - used
+    when a customer asks for a category by name (e.g. "meals", "breakfast")
+    so the AI can list every real option in that category cleanly, instead
+    of a noisy keyword search that mixes in unrelated items that happen to
+    fuzzy-match (confirmed live: searching "meals" returned several
+    different Meal items correctly, but also unrelated fish dishes mixed
+    into the same result list, which the AI then struggled to resolve into
+    a clean answer and silently failed to add anything)."""
+    _init_schema()
+    conn = _get_conn()
+    where = "WHERE category = ? COLLATE NOCASE"
+    if in_stock_only:
+        where += " AND in_stock = 1 AND stock_qty > 0"
+    cur = conn.execute(f"""
+        SELECT id, sku, name, category, unit, price, stock_qty, in_stock, image_url, source, updated_at
+        FROM catalog_items
+        {where}
+        ORDER BY name
+    """, (category,))
+    return [_row_to_dict(row) for row in cur.fetchall()]
+
+
 def get_item(item_id: int):
     _init_schema()
     conn = _get_conn()

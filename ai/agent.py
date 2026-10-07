@@ -93,6 +93,11 @@ listed (Latin script/English) regardless of the reply language, since that's how
 general "what's on the menu" question rather than naming a dish), briefly list those categories and ask which one \
 interests them, or what dish they're in the mood for - don't claim the menu is unavailable, and don't invent dish \
 names or prices before the customer narrows it down.
+- If the customer asks for a whole group/category by name instead of one specific dish (e.g. "meals", "breakfast", \
+"show me the starters") - the menu context below will then list every real item in that group with its price - \
+list them out clearly (name + price, one per line or a short bulleted list) and ask which one(s) they'd like. Don't \
+pick one for them, and don't add anything to the order yet (no ITEMS: line this turn) until they specify which \
+item(s) from the list they want.
 - Many dishes come in Half and Full sizes, listed as separate menu entries (e.g. "Butter Chicken (Half)" / "Butter \
 Chicken (Full)"). If a customer orders a dish that has both sizes in the menu context, ask which size they want \
 before adding it - never guess. If a dish only has one size listed, don't offer a choice that doesn't exist.
@@ -411,6 +416,49 @@ def _format_operating_hours_context() -> str:
     )
 
 
+# Generic group-browse words that aren't themselves real category names
+# but clearly mean "show me that kind of item" - mapped to a substring
+# matched against item NAMES (not search_items' name-or-category LIKE,
+# which also pulls in unrelated items from categories that happen to
+# contain the word elsewhere). "meals" -> "Meal" catches Snack/Jumbo/
+# Family/Party/Boneless/Kids Meal (the Broasted category) plus the plain
+# "Meals" item, without pulling in unrelated dishes.
+_GROUP_BROWSE_NAME_SUBSTRINGS = {
+    "meals": "meal",
+    "meal": "meal",
+}
+_LEADING_QTY_RE_FOR_BROWSE = re.compile(r"^\d{1,2}\s+")
+
+
+def _match_category_browse(message: str) -> list:
+    """If the customer's message is a short, generic request for a whole
+    category/group ("meals", "breakfast", "show me the tandoor items")
+    rather than one specific dish, returns every real matching item
+    cleanly (store.list_items_by_category or a name-substring match) -
+    otherwise returns [] so the normal keyword search runs instead.
+    Deliberately requires the message to be SHORT (<=3 words after
+    stripping a leading quantity) so this doesn't misfire on a longer,
+    more specific order that merely mentions a category word in passing."""
+    lowered = message.strip().lower()
+    lowered = _LEADING_QTY_RE_FOR_BROWSE.sub("", lowered).strip()
+    words = lowered.split()
+    if not words or len(words) > 3:
+        return []
+
+    for category in catalog_store.list_categories():
+        if lowered == category.lower() or lowered in (f"{category.lower()}s", f"{category.lower()} items"):
+            return catalog_store.list_items_by_category(category)
+
+    for word, name_substring in _GROUP_BROWSE_NAME_SUBSTRINGS.items():
+        if word in words:
+            return [
+                it for it in catalog_store.search_items(name_substring, limit=50)
+                if name_substring in it["name"].lower()
+            ]
+
+    return []
+
+
 def search_catalog_for_message(message: str, top_k: int = 16) -> list:
     """Very simple keyword-based menu matching: try the whole message, then
     each line (for multi-line orders like "Vanilla 2\nMango 1\nPista 1"),
@@ -593,7 +641,18 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
     decides what to add/remove, grounded in the exact menu context it was
     shown, instead of a second independent guesser risking a different
     (possibly wrong) item from what the AI told the customer was added."""
-    catalog_items = search_catalog_for_message(customer_message)
+    category_items = _match_category_browse(customer_message)
+    if category_items:
+        # The customer is asking for a whole category/group ("meals",
+        # "breakfast") rather than naming one specific dish - a plain
+        # keyword search mixes in unrelated items that happen to
+        # fuzzy-match (confirmed live: "2 meals" / "2 veg meals" returned
+        # noisy results including unrelated fish dishes, which the AI
+        # couldn't cleanly resolve and silently failed to add anything).
+        # Show exactly the real items in that group instead.
+        catalog_items = category_items
+    else:
+        catalog_items = search_catalog_for_message(customer_message)
     # A generic "what's on the menu?" question names no specific dish, so
     # the keyword search above legitimately finds nothing - fall back to
     # listing categories instead of telling the customer the menu is
