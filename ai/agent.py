@@ -85,9 +85,13 @@ If it's not known, don't ask for it either; just proceed without using a name.
 - Always reply in the same language the customer is writing in (e.g. Arabic, Hindi, Malayalam, Tamil, English) - if \
 they switch languages mid-conversation, switch with them. Write the ENTIRE reply in that one language and script \
 consistently - never mix scripts or languages within a single reply (e.g. don't blend Tamil and Bengali characters, \
-or switch back to English mid-sentence). If you're not fully confident in a non-English language, it's better to \
-reply in clear, simple English than to risk a garbled or mixed-script reply. Menu item names and prices stay as \
-listed (Latin script/English) regardless of the reply language, since that's how they're listed in the system.
+or switch back to English mid-sentence). Default to English whenever the customer's message is in English, even if \
+it contains a typo, informal spelling, or an unfamiliar word (e.g. "Chicken blriyani" is still English, just \
+misspelled - reply in English, never switch to a different language based on a typo). Only switch away from English \
+when the customer's message is clearly and substantially written in another language/script, not based on a single \
+ambiguous word. If you're not fully confident in a non-English language, it's better to reply in clear, simple \
+English than to risk a garbled, wrong-language, or mixed-script reply. Menu item names and prices stay as listed \
+(Latin script/English) regardless of the reply language, since that's how they're listed in the system.
 - Only offer/confirm items that appear in the menu context below, using their exact listed price and unit.
 - If the menu context below lists categories instead of specific dishes (this happens when the customer asked a \
 general "what's on the menu" question rather than naming a dish), briefly list those categories and ask which one \
@@ -306,10 +310,22 @@ def _format_delivery_context(order: dict | None) -> str:
         return "Dine-in order - no delivery fee, no location needed."
     if order.get("is_pickup"):
         return "Pickup order - no delivery fee, no location needed."
-    if order.get("delivery_lat") is not None:
+    # Checked delivery_address_text alongside delivery_lat - a customer who
+    # TYPES their address (no location pin) has delivery_fee/total already
+    # computed and stored by set_order_delivery_text, but this previously
+    # only recognized a pin, so a typed-address order always fell through
+    # to the generic "not yet decided" message below even after the
+    # customer clearly chose delivery and gave a real address. Confirmed
+    # live: the model then concluded (reasonably, given what it was shown)
+    # that no delivery fee existed yet and told the customer to call the
+    # restaurant to confirm it before checkout - completely blocking a
+    # normal, correctly-computed order from ever being confirmed.
+    if order.get("delivery_lat") is not None or order.get("delivery_address_text"):
         return (
-            f"Delivery location received. Delivery fee: {config.CURRENCY} {order['delivery_fee']:.2f}, "
-            f"Total: {config.CURRENCY} {order['total']:.2f}"
+            f"Delivery address received. Delivery fee: {config.CURRENCY} {order['delivery_fee']:.2f}, "
+            f"Total: {config.CURRENCY} {order['total']:.2f} - this is the real, final delivery fee, already "
+            f"computed and stored, not a placeholder - never say it's unknown or tell the customer to call and "
+            f"confirm it."
         )
     return "(Delivery-vs-pickup-vs-dine-in not yet decided, or delivery location not yet shared.)"
 
@@ -656,6 +672,20 @@ _META_COMMENTARY_RE = re.compile(
     re.IGNORECASE,
 )
 _SAFE_FALLBACK_REPLY = "Sorry, could you repeat that? I want to make sure I get your order right."
+# Confirmed live: _format_delivery_context previously only recognized a
+# shared location pin, not a typed-text address, as "delivery info
+# received" - so a typed-address order always looked like the delivery
+# fee was still unknown, and the model told the customer to call the
+# restaurant to confirm it before checkout, completely blocking a
+# normal, already-computed order from ever being confirmed. The prompt
+# context is fixed (see _format_delivery_context), but this is also
+# caught here as a hard guard, since compute_delivery_fee() is a
+# deterministic function - the AI should never need to say this.
+_FALSE_DELIVERY_FEE_CLAIM_RE = re.compile(
+    r"\b(call the restaurant|confirm the delivery fee|don'?t have the delivery fee|delivery fee isn'?t available"
+    r"|without the delivery fee)\b",
+    re.IGNORECASE,
+)
 # A real customer reply is explicitly instructed to stay under ~100 words
 # (SYSTEM_PROMPT_TEMPLATE's "Keep replies under 100 words" rule) - a reply
 # many times that length is itself a strong signal of leaked internal
@@ -688,6 +718,11 @@ def _sanitize_reply_text(text: str) -> str:
         return _SAFE_FALLBACK_REPLY
     if _META_COMMENTARY_RE.search(text):
         return _SAFE_FALLBACK_REPLY
+    if _FALSE_DELIVERY_FEE_CLAIM_RE.search(text):
+        return (
+            "Your delivery fee is already calculated and included in your total - no need to call. "
+            "Reply CONFIRM to place your order."
+        )
     stripped = text.strip()
     if len(stripped) <= 6:
         # "Here", "Ok", "-" etc. - too short to be a real, complete reply
