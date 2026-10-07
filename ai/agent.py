@@ -723,6 +723,22 @@ _FALSE_DELIVERY_FEE_CLAIM_RE = re.compile(
     r"|without the delivery fee)\b",
     re.IGNORECASE,
 )
+# Confirmed live: the generic AI reply path said "Thanks, Dave. I've
+# received your confirmation." in response to "Confirm" - reads exactly
+# like a real order confirmation, but _confirm_order() (the ONLY place
+# that actually marks an order confirmed) is called from a single,
+# separate, deterministic code path in main.py gated on
+# detect_confirmation_intent() - never from this generic reply path. So
+# ANY claim of having "received"/"got" a confirmation from here is false
+# by construction; the real confirmation message is a structured receipt
+# (store name, itemized total, "Reply CONFIRM..."), never this phrasing.
+# Scoped narrowly (requires "confirmation" itself, not just "confirm" or
+# "thanks") to avoid catching an ordinary acknowledgment like "Got it,
+# thanks!" after a cart-only reply.
+_FALSE_ORDER_CONFIRMED_CLAIM_RE = re.compile(
+    r"\b(received|got|noted) your confirmation\b|\byour order is (now )?confirmed\b(?!.{0,60}reply confirm)",
+    re.IGNORECASE | re.DOTALL,
+)
 # A real customer reply is explicitly instructed to stay under ~100 words
 # (SYSTEM_PROMPT_TEMPLATE's "Keep replies under 100 words" rule) - a reply
 # many times that length is itself a strong signal of leaked internal
@@ -759,6 +775,11 @@ def _sanitize_reply_text(text: str) -> str:
         return (
             "Your delivery fee is already calculated and included in your total - no need to call. "
             "Reply CONFIRM to place your order."
+        )
+    if _FALSE_ORDER_CONFIRMED_CLAIM_RE.search(text):
+        return (
+            "To actually place your order, please reply with exactly the word CONFIRM once I've shown you the "
+            "final total - that's the only way I can place it for you."
         )
     stripped = text.strip()
     if len(stripped) <= 6:
