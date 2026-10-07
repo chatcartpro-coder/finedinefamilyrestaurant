@@ -52,7 +52,11 @@
 {% for item in items %}
 <div class="item-line">
   {{ "%g"|format(item.qty) }} x {{ item.item_name_snapshot }}
+  {% if item.catalog_item_id is none %}
+  <div class="item-sub muted">Price TBD - restaurant will confirm at delivery</div>
+  {% else %}
   <div class="item-sub row"><span>{{ currency }} {{ "%.2f"|format(item.unit_price_snapshot) }}</span><span>{{ currency }} {{ "%.2f"|format(item.line_total) }}</span></div>
+  {% endif %}
 </div>
 {% endfor %}
 
@@ -64,6 +68,9 @@
 {% if order.discount_applied %}<div class="muted">Discount applied</div>{% endif %}
 <div class="row total-row"><span>TOTAL</span><span>{{ currency }} {{ "%.2f"|format(order.total) }}</span></div>
 <div class="muted">(incl. VAT {{ currency }} {{ "%.2f"|format(vat_amount) }}, excl. VAT {{ currency }} {{ "%.2f"|format(amount_excl_vat) }})</div>
+{% if items|selectattr("catalog_item_id", "none")|list %}
+<div class="muted">Total excludes item(s) with price TBD - call {{ config.STORE_PHONE or "+971042847471" }} to confirm</div>
+{% endif %}
 
 {% if order.order_type == 'dine_in' %}
 <div class="divider"></div>

@@ -114,13 +114,14 @@ something the customer already told you. If a customer's answer to a clarifying 
 reply (e.g. a typo or abbreviation you're not confident about), don't guess - briefly confirm what you understood \
 before proceeding (e.g. "Just to confirm - extra sweet, or something else?").
 - If a customer asks for something not in the menu context at all (e.g. a snack, ice cream flavor, or dish that \
-isn't listed anywhere, not even a close variant), don't refuse it outright - tell them you'll note it down and the \
-restaurant will confirm if they can prepare it, then capture exactly what they asked for via a NOTE: line (see CART \
-UPDATES below) so staff see it on the order and can follow up. Never invent a price for it or add it as a priced \
-ITEMS line (there's no real catalog price to use) - it's recorded as a note only, and the order total only reflects \
-the real catalog items actually added. If the menu context shows a close real variant (e.g. they ask for "Pista ice \
-cream" but only "Mixed Ice Cream" is listed), mention that real option too so they can choose it instead if they'd \
-rather not wait for confirmation - but still accept and note their original request if they want it anyway.
+isn't listed anywhere, not even a close variant), don't refuse it and don't ask them to call separately - ALWAYS \
+take the order anyway. Add it as a real line item on their order using an ADDITEM: trailer line (see CART UPDATES \
+below), not just a note - this puts it on the printed receipt/kitchen ticket as an actual item, same as anything \
+else they ordered. Tell them clearly that the price for this item will be confirmed/mentioned at delivery, or they \
+can check with the restaurant directly at +971042847471 if they want to know the price now - never invent a price \
+for it yourself. If the menu context shows a close real variant (e.g. they ask for "Pista ice cream" but only \
+"Mixed Ice Cream" is listed), mention that real option too so they can choose it instead if they'd rather have an \
+exact price now - but still add their original request if they want it anyway.
 - If a customer asks the price of a dish, state it clearly from the menu context, and add one brief, genuine \
 reason to order it (e.g. "it's one of our most popular biryanis") - never invent a claim not reasonably inferable \
 from the menu, and never be pushy about it.
@@ -214,22 +215,27 @@ just confirm warmly and move on, don't interrogate the customer about an ingredi
 
 If the customer gives a special preparation/handling request this turn that doesn't change WHAT they're ordering \
 (e.g. "make it extra crispy", "no onions", "no sambar, extra red chutney", "less sugar", "ring the doorbell twice", \
-or an ingredient customization as described above), OR asks for an item not in the menu context at all (see the \
-rule above - e.g. "snacks" or an ice cream flavor that isn't listed) - something the kitchen/staff need to know, not \
-something with a real catalog price - add a SECOND trailer line right \
-after the ITEMS line, starting with exactly "NOTE:" followed by a short, clear instruction (your own words, not a \
-quote). This gets attached to the order for the restaurant staff to see on the receipt/dashboard - acknowledge the \
-request warmly in your reply same as you would anyway, but don't skip writing the NOTE line just because you \
-already said you'd do it in the reply text, since that line is what actually saves it. Omit the NOTE line entirely \
-(don't write "NOTE: none") if there's no new special request this turn. Example responses:
+or an ingredient customization as described above) - something the kitchen/staff need to know, not a new item - add \
+a SECOND trailer line right after the ITEMS line, starting with exactly "NOTE:" followed by a short, clear \
+instruction (your own words, not a quote). This gets attached to the order for the restaurant staff to see on the \
+receipt/dashboard - acknowledge the request warmly in your reply same as you would anyway, but don't skip writing \
+the NOTE line just because you already said you'd do it in the reply text, since that line is what actually saves \
+it. Omit the NOTE line entirely (don't write "NOTE: none") if there's no new special request this turn. Example:
 Sure! I've added 2 Chicken Biryani (Full) to your order, extra spicy as requested. Would you like a drink with that?
 ITEMS: ADD id:482 qty:2
 NOTE: Extra spicy
 
-Noted - I'll pass along your request for vanilla ice cream, and the restaurant will confirm if they can prepare it. \
-Anything else?
+If the customer asks for an item not in the menu context at all (see the rule above - e.g. "snacks" or an ice cream \
+flavor that isn't listed), add it as a REAL order line using a trailer line starting with exactly "ADDITEM:" \
+followed by one entry per off-catalog item this turn, separated by semicolons, formatted as \
+'"<exact item name, your own clean wording>" qty:Q' (quotes required around the name, since there's no catalog id \
+for it). This is a real cart line on the receipt/kitchen ticket, not just a note - the restaurant sets the actual \
+price later. Always tell the customer plainly that the price will be confirmed/mentioned at delivery, or they can \
+call +971042847471 to ask now - never invent a price yourself. Example:
+Noted - I've added vanilla ice cream to your order. The restaurant will confirm the price at delivery, or you can \
+call +971042847471 to check now. Anything else?
 ITEMS: none
-NOTE: Customer also requested: vanilla ice cream (not on menu - restaurant to confirm availability)
+ADDITEM: "Vanilla Ice Cream" qty:1
 
 If the customer's message this turn contains delivery address information - either a FULL street address (e.g. \
 "Al Wasl P562", "Villa 12 Jumeirah 3", "JVC S11 R12" - UAE addresses are often just an area/street name plus a plot \
@@ -573,6 +579,16 @@ _ITEMS_LINE_RE = re.compile(r"^ITEMS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _ITEMS_ACTION_RE = re.compile(r"(ADD|REMOVE)\s+id:(\d+)\s+qty:(\d+(?:\.\d+)?)", re.IGNORECASE)
 _NOTE_LINE_RE = re.compile(r"^NOTE:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _ADDRESS_LINE_RE = re.compile(r"^ADDRESS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+# A FOURTH trailer line for an off-catalog item request (see CART UPDATES
+# in SYSTEM_PROMPT_TEMPLATE) - unlike ITEMS:, which only ever references a
+# real [id:N], this takes a freeform name since there's no catalog id for
+# something not on the menu. Per explicit instruction: an off-menu item
+# still becomes a REAL line item on the order/receipt (not just a NOTE),
+# with price left for the restaurant to confirm - "Off Menu Item Prices
+# will be mentioned during delivery | for prices check with the
+# restaurant". Multiple entries separated by semicolons, same as ITEMS:.
+_ADDITEM_LINE_RE = re.compile(r"^ADDITEM:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_ADDITEM_ACTION_RE = re.compile(r'"([^"]+)"\s+qty:(\d+(?:\.\d+)?)', re.IGNORECASE)
 # Catches a reply claiming something was added to the order/cart
 # ("I've added 2 Chicken Dum Biryani to your order", "added to your cart",
 # "have added X") - used only when there's NO ITEMS: line at all, to
@@ -589,16 +605,20 @@ _CLAIMS_ADDED_RE = re.compile(
 
 def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list, str | None, str | None]:
     """Splits the AI's raw response into (customer_facing_text, actions,
-    note, address). The ITEMS:/NOTE:/ADDRESS: trailer lines (see
+    note, address). The ITEMS:/ADDITEM:/NOTE:/ADDRESS: trailer lines (see
     SYSTEM_PROMPT_TEMPLATE's "CART UPDATES" section) are stripped out
     entirely before anything is sent to the customer - they're
     machine-readable instructions to this code, never customer-visible.
     `allowed_items` is {id: item_dict} for exactly the catalog items shown
-    to the model THIS turn (see generate_reply) - an action referencing any
-    other id is dropped, so the model can never cause an item the customer
-    didn't actually see offered to be added to their order, even if it
-    hallucinates an id. `note` is the special-request text (e.g. "extra
-    crispy", "no sambar, extra red chutney") to attach to the order via
+    to the model THIS turn (see generate_reply) - an ITEMS: action
+    referencing any other id is dropped, so the model can never cause an
+    item the customer didn't actually see offered to be added to their
+    order, even if it hallucinates an id. ADDITEM: actions (off-catalog
+    items, real cart lines with id=None and price=0, restaurant confirms
+    price at delivery - see main.py's _apply_cart_actions) carry a
+    freeform name instead, since there's no catalog id for something not
+    on the menu. `note` is the special-request text (e.g. "extra crispy",
+    "no sambar, extra red chutney") to attach to the order via
     storage.store.add_order_note, or None if the model didn't include a
     NOTE: line this turn. `address` is the clean door/unit-number text the
     model extracted from the customer's message (see main.py's
@@ -633,6 +653,23 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
         if item_id not in allowed_items or qty <= 0:
             continue
         actions.append({"action": verb.upper(), "item": allowed_items[item_id], "qty": qty})
+
+    additem_match = _ADDITEM_LINE_RE.search(raw_reply, match.end())
+    if additem_match:
+        for name, qty_str in _ADDITEM_ACTION_RE.findall(additem_match.group(1)):
+            qty = float(qty_str)
+            name = name.strip()
+            if not name or qty <= 0:
+                continue
+            # id=None marks this as off-catalog throughout the pipeline
+            # (main.py's _apply_cart_actions/store.add_order_item) - price
+            # is left for the restaurant to set at prep/delivery, per
+            # explicit instruction, rather than guessed or invented here.
+            actions.append({
+                "action": "ADD",
+                "item": {"id": None, "name": name, "price": 0.0, "in_stock": True},
+                "qty": qty,
+            })
 
     note = None
     note_match = _NOTE_LINE_RE.search(raw_reply, match.end())

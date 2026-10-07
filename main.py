@@ -723,8 +723,23 @@ def _drop_restated_adds(order: dict | None, actions: list) -> list:
     new item (not already in the cart) still goes through normally."""
     if not actions or not order:
         return actions
-    existing_ids = {i["catalog_item_id"] for i in store.get_order_items(order["id"])}
-    return [a for a in actions if not (a["action"] == "ADD" and a["item"]["id"] in existing_ids)]
+    existing_items = store.get_order_items(order["id"])
+    existing_ids = {i["catalog_item_id"] for i in existing_items if i["catalog_item_id"] is not None}
+    # Off-catalog items (catalog_item_id=None, see ai/agent.py's ADDITEM:
+    # trailer) have no id to key on - match by name instead, so two
+    # DIFFERENT off-catalog items aren't wrongly treated as duplicates of
+    # each other just because both have id=None.
+    existing_names = {i["item_name_snapshot"].lower() for i in existing_items if i["catalog_item_id"] is None}
+
+    def _is_restated(a):
+        if a["action"] != "ADD":
+            return False
+        item_id = a["item"]["id"]
+        if item_id is None:
+            return a["item"]["name"].strip().lower() in existing_names
+        return item_id in existing_ids
+
+    return [a for a in actions if not _is_restated(a)]
 
 
 def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict | None:
@@ -751,6 +766,17 @@ def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict |
     if not actions:
         return order
 
+    def _matches(row, item):
+        # Off-catalog items (item["id"] is None - see ai/agent.py's
+        # ADDITEM: trailer) have no catalog id to match on, and
+        # catalog_item_id is NULL for every off-catalog row - matching
+        # "catalog_item_id == None" would wrongly treat every DIFFERENT
+        # off-catalog item as the same line. Match by name instead for
+        # these; a real catalog item still matches by id as before.
+        if item["id"] is None:
+            return row["catalog_item_id"] is None and row["item_name_snapshot"].strip().lower() == item["name"].strip().lower()
+        return row["catalog_item_id"] == item["id"]
+
     for change in actions:
         item = change["item"]
         qty = change["qty"]
@@ -762,7 +788,7 @@ def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict |
             if change["action"] == "REMOVE":
                 # No matching line to remove -> genuine no-op, skip without
                 # touching status (see docstring).
-                has_match = any(i["catalog_item_id"] == item["id"] for i in store.get_order_items(order["id"]))
+                has_match = any(_matches(i, item) for i in store.get_order_items(order["id"]))
                 if not has_match:
                     continue
             else:  # ADD
@@ -776,7 +802,7 @@ def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict |
                 # still goes through since its qty exceeds the existing line.
                 existing_qty = sum(
                     i["qty"] for i in store.get_order_items(order["id"])
-                    if i["catalog_item_id"] == item["id"]
+                    if _matches(i, item)
                 )
                 if existing_qty >= qty:
                     continue
@@ -793,7 +819,7 @@ def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict |
         if change["action"] == "ADD":
             store.add_order_item(order["id"], item["id"], item["name"], item["price"], qty)
         else:  # REMOVE
-            existing = [i for i in store.get_order_items(order["id"]) if i["catalog_item_id"] == item["id"]]
+            existing = [i for i in store.get_order_items(order["id"]) if _matches(i, item)]
             remaining = qty
             for row in existing:
                 if remaining <= 0:
@@ -836,11 +862,19 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
 
     lines = [f"{config.STORE_NAME}", f"Order {store.order_ref(order)} - confirmed", f"Order type: {store.order_type_label(order)}", ""]
 
+    off_catalog_items = False
     for item in items:
         qty = item["qty"]
         qty_str = f"{qty:g}" if isinstance(qty, float) else str(qty)
         lines.append(f"{qty_str} x {item['item_name_snapshot']}")
-        lines.append(f"  {config.CURRENCY} {item['unit_price_snapshot']:.2f} = {config.CURRENCY} {item['line_total']:.2f}")
+        if item.get("catalog_item_id") is None:
+            # Off-catalog item (see ai/agent.py's ADDITEM: trailer) - no
+            # real price exists yet, restaurant sets it at delivery, so
+            # showing "AED 0.00" here would misleadingly read as "free".
+            lines.append("  Price TBD - restaurant will confirm at delivery")
+            off_catalog_items = True
+        else:
+            lines.append(f"  {config.CURRENCY} {item['unit_price_snapshot']:.2f} = {config.CURRENCY} {item['line_total']:.2f}")
 
     lines.append("")
     lines.append(f"Subtotal: {config.CURRENCY} {order['subtotal']:.2f}")
@@ -849,6 +883,8 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
     if order.get("discount_applied"):
         lines.append("Discount applied")
     lines.append(f"Total: {config.CURRENCY} {order['total']:.2f}")
+    if off_catalog_items:
+        lines.append(f"(Total excludes item(s) with price TBD - call {config.STORE_PHONE or '+971042847471'} to check)")
     excl_vat, vat_amount = vat_breakdown(order["total"])
     lines.append(f"(incl. VAT {config.CURRENCY} {vat_amount:.2f} - amount excl. VAT: {config.CURRENCY} {excl_vat:.2f})")
 

@@ -91,6 +91,10 @@ def _serialize_order(order: dict) -> dict:
                 "qty": i["qty"],
                 "unit_price": i["unit_price_snapshot"],
                 "line_total": i["line_total"],
+                # None for an off-catalog item (ai/agent.py's ADDITEM:
+                # trailer) - print_agent/agent.py uses this to show "Price
+                # TBD" instead of a misleading "AED 0.00".
+                "catalog_item_id": i["catalog_item_id"],
             }
             for i in items
         ],

@@ -131,11 +131,19 @@ def _write_receipt(printer, order: dict, store_name: str, currency: str):
     printer.text(f"Phone: {order['phone']}\n")
     printer.text("-" * 32 + "\n")
 
+    has_off_catalog = False
     for item in order["items"]:
         qty = item["qty"]
         qty_str = f"{qty:g}" if isinstance(qty, float) else str(qty)
         printer.text(f"{qty_str} x {item['name']}\n")
-        printer.text(f"  {currency} {item['unit_price']:.2f} = {currency} {item['line_total']:.2f}\n")
+        if item.get("catalog_item_id") is None:
+            # Off-catalog item (ai/agent.py's ADDITEM: trailer) - no real
+            # price yet, restaurant confirms at delivery; "AED 0.00" here
+            # would misleadingly read as "free".
+            printer.text("  Price TBD - restaurant will confirm at delivery\n")
+            has_off_catalog = True
+        else:
+            printer.text(f"  {currency} {item['unit_price']:.2f} = {currency} {item['line_total']:.2f}\n")
 
     printer.text("-" * 32 + "\n")
     printer.text(f"Subtotal: {currency} {order['subtotal']:.2f}\n")
@@ -148,6 +156,8 @@ def _write_receipt(printer, order: dict, store_name: str, currency: str):
     printer.set(bold=False)
     if order.get("vat_amount") is not None:
         printer.text(f"(incl. VAT {currency} {order['vat_amount']:.2f}, excl. VAT {currency} {order['amount_excl_vat']:.2f})\n")
+    if has_off_catalog:
+        printer.text("Total excludes item(s) with price TBD - call restaurant to confirm\n")
 
     if order.get("order_type") == "dine_in":
         printer.text("-" * 32 + "\n")
