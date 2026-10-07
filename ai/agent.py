@@ -232,7 +232,10 @@ a SECOND trailer line right after the ITEMS line, starting with exactly "NOTE:" 
 instruction (your own words, not a quote). This gets attached to the order for the restaurant staff to see on the \
 receipt/dashboard - acknowledge the request warmly in your reply same as you would anyway, but don't skip writing \
 the NOTE line just because you already said you'd do it in the reply text, since that line is what actually saves \
-it. Omit the NOTE line entirely (don't write "NOTE: none") if there's no new special request this turn. Example:
+it. Omit the NOTE line entirely (don't write "NOTE: none") if there's no new special request this turn, and NEVER \
+re-write a NOTE line for a request already covered by an existing note shown in the order context below - if the \
+same request is still unresolved (e.g. still waiting on a size choice), just ask or resolve it, don't re-save a \
+near-duplicate note each turn. Example:
 Sure! I've added 2 Chicken Biryani (Full) to your order, extra spicy as requested. Would you like a drink with that?
 ITEMS: ADD id:482 qty:2
 NOTE: Extra spicy
@@ -318,6 +321,11 @@ def _format_cart_context(order: dict | None, items: list) -> str:
         for i in items
     ]
     lines.append(f"Subtotal: {config.CURRENCY} {order['subtotal']:.2f}")
+    if order.get("notes"):
+        lines.append("Existing notes already saved on this order (don't repeat these as a new NOTE: line):")
+        for note_part in order["notes"].split("; "):
+            if note_part.strip():
+                lines.append(f"- {note_part.strip()}")
     return "\n".join(lines)
 
 
@@ -880,6 +888,21 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         catalog_items = category_items
     else:
         catalog_items = search_catalog_for_message(customer_message)
+        # search_catalog_for_message only looks at THIS turn's text, so a
+        # dish named a turn or two ago (e.g. while the AI was still asking
+        # a clarifying question about it) drops out of allowed_items the
+        # moment the customer's reply doesn't repeat its name - confirmed
+        # live this left _match_real_catalog_item with nothing to resolve
+        # against, so the item never became a real ADD and the same NOTE:
+        # got re-emitted turn after turn instead. Keep a still-unresolved
+        # order note's item in context until it's actually resolved.
+        if order and order.get("notes"):
+            seen_ids = {it["id"] for it in catalog_items}
+            for note_part in order["notes"].split("; "):
+                for extra in search_catalog_for_message(note_part, top_k=4):
+                    if extra["id"] not in seen_ids:
+                        seen_ids.add(extra["id"])
+                        catalog_items.append(extra)
     # A generic "what's on the menu?" question names no specific dish, so
     # the keyword search above legitimately finds nothing - fall back to
     # listing categories instead of telling the customer the menu is

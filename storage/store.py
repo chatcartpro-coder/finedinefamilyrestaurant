@@ -557,13 +557,23 @@ def add_order_note(order_id: int, note: str):
     overwritten, since a customer can add several notes across a
     conversation. Shown on the WhatsApp receipt, printed receipt, and
     Orders admin page (main.py's generate_reply + CART UPDATES prompt
-    section is what actually captures these from the conversation)."""
+    section is what actually captures these from the conversation).
+
+    Skips the append if the note is an exact or near-duplicate (same
+    text, case-insensitive) of an existing note already on the order -
+    confirmed live that a model can re-emit a NOTE: trailer for the same
+    unresolved request (e.g. a sized item needing clarification) across
+    several turns, which otherwise piles up as repeated near-identical
+    lines on the printed receipt."""
     conn = _get_conn()
     cur = conn.execute("SELECT notes FROM orders WHERE id = ?", (order_id,))
     row = cur.fetchone()
     existing = (row[0] if row else None) or ""
     note = note.strip()
     if not note:
+        return
+    existing_parts = [p.strip() for p in existing.split("; ") if p.strip()]
+    if any(p.lower() == note.lower() for p in existing_parts):
         return
     combined = f"{existing}; {note}" if existing else note
     conn.execute("UPDATE orders SET notes = ? WHERE id = ?", (combined, order_id))
