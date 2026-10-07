@@ -275,6 +275,18 @@
   }
 })();
 </script>
+{% if active_page in ('dashboard', 'orders') %}
+<script>
+  // Keeps live stats/order list current without a manual reload. Skipped
+  // while the incoming-order banner is showing, so a reload never cuts off
+  // the ringtone or yanks the Accept/Print buttons out from under the user.
+  setInterval(function () {
+    var banner = document.getElementById('newOrderBanner');
+    if (banner && banner.classList.contains('open')) return;
+    window.location.reload();
+  }, 60000);
+</script>
+{% endif %}
 {% block extra_scripts %}{% endblock %}
 </body>
 </html>
