@@ -5,3 +5,8 @@ data/app.db
 credentials/*.json
 .venv/
 venv/
+
+print_agent/build/
+print_agent/dist/
+print_agent/*.spec
+print_agent/config.ini

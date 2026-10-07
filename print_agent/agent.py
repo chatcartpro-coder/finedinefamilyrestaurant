@@ -348,7 +348,32 @@ def poll_loop(server_url: str, token: str, connection_type: str, printer_target:
         time.sleep(interval)
 
 
+def _load_config_ini():
+    """Loads config.ini sitting next to the exe (or script) into PRINT_AGENT_*
+    env vars, without overriding any already set - lets staff configure the
+    exe by editing a plain text file instead of a .bat."""
+    import configparser
+    base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "config.ini")
+    os.environ.setdefault("PRINT_AGENT_SERVER_URL", "https://finedinefamilyrestaurant.onrender.com")
+    if not os.path.exists(path):
+        return
+    cp = configparser.ConfigParser()
+    cp.read(path, encoding="utf-8")
+    keys = {
+        "server_url": "PRINT_AGENT_SERVER_URL", "token": "PRINT_AGENT_TOKEN",
+        "printer_name": "PRINT_AGENT_PRINTER_NAME", "printer_ip": "PRINT_AGENT_PRINTER_IP",
+        "extra_printer_ips": "PRINT_AGENT_EXTRA_PRINTER_IPS", "store_name": "PRINT_AGENT_STORE_NAME",
+        "currency": "PRINT_AGENT_CURRENCY", "interval": "PRINT_AGENT_INTERVAL",
+    }
+    for key, env in keys.items():
+        val = cp.get("printer", key, fallback="").strip()
+        if val and not os.environ.get(env):
+            os.environ[env] = val
+
+
 def main():
+    _load_config_ini()
     parser = argparse.ArgumentParser(description="Fine Dine Family Restaurant print agent - polls for confirmed orders and prints them.")
     parser.add_argument("--server-url", default=os.getenv("PRINT_AGENT_SERVER_URL"), help="Cloud app base URL, e.g. https://your-app.onrender.com")
     parser.add_argument("--token", default=os.getenv("PRINT_AGENT_TOKEN"), help="Shared print agent token (matches PRINT_AGENT_TOKEN in the server's .env)")
@@ -357,7 +382,7 @@ def main():
     parser.add_argument("--printer-name", default=os.getenv("PRINT_AGENT_PRINTER_NAME"), help="Name of a printer already installed in Windows (Settings > Printers & scanners) - prints through the normal Windows spooler instead of a direct network connection, so it coexists with other software (e.g. existing KOT/POS software) sharing the same printer.")
     parser.add_argument("--store-name", default=os.getenv("PRINT_AGENT_STORE_NAME", "Fine Dine Family Restaurant"))
     parser.add_argument("--currency", default=os.getenv("PRINT_AGENT_CURRENCY", "AED"))
-    parser.add_argument("--interval", type=int, default=int(os.getenv("PRINT_AGENT_INTERVAL", "10")), help="Seconds between polls")
+    parser.add_argument("--interval", type=int, default=int(os.getenv("PRINT_AGENT_INTERVAL", "3")), help="Seconds between polls")
     parser.add_argument("--once", action="store_true", help="Print any pending orders once and exit, instead of polling forever")
     parser.add_argument(
         "--extra-printer-ip", action="append", default=None,
@@ -414,4 +439,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as e:
+        if e.code not in (0, None):
+            input("Press Enter to close...")
+        raise
+    except Exception:
+        logger.exception("Print agent crashed")
+        input("Press Enter to close...")

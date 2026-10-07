@@ -1,0 +1,16 @@
+; Copy this file to "config.ini" (same folder as PrintAgent.exe) and edit.
+[printer]
+; Required: the PRINT_AGENT_TOKEN value from Render's Environment tab
+token = PASTE_TOKEN_HERE
+; Optional - defaults to the live server
+; server_url = https://finedinefamilyrestaurant.onrender.com
+; Optional - exact Windows printer name (use this if KOT/POS software shares the printer)
+; printer_name =
+; Optional - network printer IP (otherwise taken from the dashboard Printer page)
+; printer_ip =
+; Optional - extra printers to ALSO print to, comma separated
+; extra_printer_ips = 192.168.70.242
+; store_name = Fine Dine Family Restaurant
+; currency = AED
+; Seconds between checks for new orders (default 3)
+; interval = 3
