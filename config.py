@@ -70,7 +70,7 @@ class Config:
     # care which provider, it's a plain REST call either way.
     WHISPER_API_KEY = os.getenv("WHISPER_API_KEY", "")
     WHISPER_BASE_URL = os.getenv("WHISPER_BASE_URL", "https://api.groq.com/openai/v1")
-    WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3")
+    WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-large-v3-turbo")
 
     # Admin session auth
     ADMIN_SESSION_SECRET = os.getenv("ADMIN_SESSION_SECRET", "")

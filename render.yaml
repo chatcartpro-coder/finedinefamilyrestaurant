@@ -37,7 +37,7 @@ services:
       - key: WHISPER_BASE_URL
         value: https://api.groq.com/openai/v1
       - key: WHISPER_MODEL
-        value: whisper-large-v3
+        value: whisper-large-v3-turbo
       - key: ADMIN_SESSION_SECRET
         generateValue: true
       - key: PRINT_AGENT_TOKEN
