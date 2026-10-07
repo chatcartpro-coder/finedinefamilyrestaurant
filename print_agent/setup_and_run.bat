@@ -34,6 +34,13 @@ echo Starting print agent - this window must stay open to keep auto-printing wor
 echo Press Ctrl+C to stop.
 echo.
 
-%PY% -m print_agent.agent --server-url https://finedinefamilyrestaurant.onrender.com --token %PRINT_AGENT_TOKEN%
+REM Run agent.py directly as a script (next to this .bat file) rather than
+REM as "-m print_agent.agent" - the latter requires a parent folder actually
+REM named print_agent one level up, which isn't guaranteed if only this
+REM folder's contents were copied to the store PC (confirmed live:
+REM ModuleNotFoundError: No module named 'print_agent'). agent.py is
+REM self-contained (no imports from the rest of the project), so running it
+REM directly works regardless of what the containing folder is named.
+%PY% "%~dp0agent.py" --server-url https://finedinefamilyrestaurant.onrender.com --token %PRINT_AGENT_TOKEN%
 
 pause
