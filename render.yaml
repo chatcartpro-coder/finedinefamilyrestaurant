@@ -27,9 +27,9 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: google/gemma-4-26b-a4b-it:free
+        value: nvidia/nemotron-3-super-120b-a12b:free
       - key: OPENROUTER_FALLBACK_MODELS
-        value: "nvidia/nemotron-3-super-120b-a12b:free,thinkingmachines/inkling-small:free,google/gemma-4-31b-it:free,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,~google/gemini-flash-latest"
+        value: "thinkingmachines/inkling-small:free,google/gemma-4-31b-it:free,nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free,google/gemma-4-26b-a4b-it:free,~google/gemini-flash-latest"
       - key: OPENROUTER_VISION_MODEL
         sync: false
       - key: WHISPER_API_KEY
