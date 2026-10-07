@@ -7,7 +7,26 @@ the AI/webhook code that reads from it (see catalog/pos_client.py).
 import sqlite3
 from datetime import datetime, timezone
 
+from rapidfuzz import fuzz
+
 from storage.store import _get_conn
+
+# Below this score (0-100), a fuzzy match is more likely noise than a real
+# spelling variant - tuned against real customer typos observed live (e.g.
+# "idli" vs the menu's "Idly Set" scores 75, "set idli" vs "Idly Set" scores
+# 87.5, both comfortably above unrelated items in the low 40s-60s).
+_FUZZY_MATCH_THRESHOLD = 65
+
+# Common conversational English words never worth fuzzy-matching against
+# dish names - confirmed live: "hello" fuzzy-matched "Bhel Puri" and "whats"
+# fuzzy-matched "Wheat Porotta" purely on coincidental letter overlap, which
+# broke the "no items found -> show menu categories" fallback for a generic
+# "what's on the menu?" question (ai/agent.py's MENU_BROWSE_PHRASES path).
+_FUZZY_STOP_WORDS = {
+    "hello", "hey", "hi", "please", "thanks", "thank", "want", "would",
+    "like", "have", "whats", "what", "menu", "today", "order", "give",
+    "need", "could", "can", "there", "available", "about", "your",
+}
 
 
 def _init_schema():
@@ -67,12 +86,21 @@ def get_item(item_id: int):
 
 
 def search_items(query: str, limit: int = 8):
-    """Simple substring match over name/category - good enough for a grocery
-    catalog of a few hundred items; swap for fuzzy/embedding search if the
-    catalog grows large or customers' phrasing drifts further from item names."""
+    """Exact substring match over name/category first (fast, precise); if
+    that finds nothing, falls back to fuzzy matching (rapidfuzz) over all
+    item names so common spelling variants of transliterated dish names
+    still resolve - confirmed live: a customer typing "idli" found nothing
+    against the menu's "Idly Set", a very common spelling difference for
+    South Indian dishes transliterated from script. Fuzzy results are
+    ordered by match score (best first), restricted to in-stock items, and
+    only returned above _FUZZY_MATCH_THRESHOLD so unrelated items don't
+    surface just because fuzzy matching is lenient."""
     _init_schema()
+    query = query.strip()
+    if not query:
+        return []
     conn = _get_conn()
-    like = f"%{query.strip()}%"
+    like = f"%{query}%"
     cur = conn.execute("""
         SELECT id, sku, name, category, unit, price, stock_qty, in_stock, image_url, source, updated_at
         FROM catalog_items
@@ -80,7 +108,49 @@ def search_items(query: str, limit: int = 8):
         ORDER BY in_stock DESC, name
         LIMIT ?
     """, (like, like, limit))
-    return [_row_to_dict(row) for row in cur.fetchall()]
+    results = [_row_to_dict(row) for row in cur.fetchall()]
+    if results:
+        return results
+
+    # Don't fuzzy-match a query that's entirely conversational filler (e.g.
+    # "hello", "whats on the menu") - nothing meaningful would survive to
+    # score against dish names anyway, and this is what lets a genuine
+    # "no specific dish named" message correctly find zero items (see
+    # ai/agent.py's category-browse fallback for MENU_BROWSE_PHRASES).
+    query_words = [w for w in query.lower().split() if len(w) >= 3]
+    if query_words and all(w in _FUZZY_STOP_WORDS for w in query_words):
+        return []
+
+    return _fuzzy_search_items(query, limit)
+
+
+def _word_match_score(query: str, name: str) -> float:
+    """Average, over each significant word in the query, of that word's best
+    fuzz.ratio against any significant word in the item name - handles
+    spelling variants of individual dish-name words (idli/idly, dosa/dossa)
+    without the false-positive noise plain whole-string fuzzy scorers (e.g.
+    partial_ratio) produce for short queries against a few hundred mostly-
+    unrelated item names (confirmed: partial_ratio alone ranked "Chilli
+    Potato" above "Idly Set" for the query "idli"). Words under 3 characters
+    are ignored on both sides - too short to carry real signal."""
+    q_words = [w for w in query.lower().split() if len(w) >= 3]
+    n_words = [w.strip("()") for w in name.lower().split() if len(w.strip("()")) >= 3]
+    if not q_words or not n_words:
+        return 0.0
+    return sum(max(fuzz.ratio(qw, nw) for nw in n_words) for qw in q_words) / len(q_words)
+
+
+def _fuzzy_search_items(query: str, limit: int) -> list:
+    conn = _get_conn()
+    cur = conn.execute("""
+        SELECT id, sku, name, category, unit, price, stock_qty, in_stock, image_url, source, updated_at
+        FROM catalog_items WHERE in_stock = 1 AND stock_qty > 0
+    """)
+    rows = [_row_to_dict(row) for row in cur.fetchall()]
+    scored = [(r, _word_match_score(query, r["name"])) for r in rows]
+    scored = [(r, s) for r, s in scored if s >= _FUZZY_MATCH_THRESHOLD]
+    scored.sort(key=lambda pair: -pair[1])
+    return [r for r, _s in scored[:limit]]
 
 
 def is_empty() -> bool:

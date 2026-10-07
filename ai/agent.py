@@ -335,11 +335,13 @@ def search_catalog_for_message(message: str, top_k: int = 16) -> list:
     multi-line order doesn't get starved of context for later lines -
     generate_reply() is what actually grounds the AI's item choices, so
     under-including real candidates here risks the AI being unable to find
-    a legitimate match even though the item exists."""
-    results = catalog_store.search_items(message, limit=top_k)
-    if results:
-        return results
-
+    a legitimate match even though the item exists. Always merges the
+    whole-message attempt with per-line/per-word fallback (not just when
+    the whole-message attempt finds nothing) - a message naming several
+    distinct dishes (e.g. "2 set idli and 2 set dosa") can get a PARTIAL
+    whole-message match (e.g. fuzzy-matching "dosa" but missing "idli"
+    entirely, confirmed live), and stopping there would silently drop the
+    other dish from the menu context the AI sees."""
     seen_ids = set()
     combined = []
 
@@ -348,6 +350,8 @@ def search_catalog_for_message(message: str, top_k: int = 16) -> list:
             if item["id"] not in seen_ids:
                 seen_ids.add(item["id"])
                 combined.append(item)
+
+    _add(catalog_store.search_items(message, limit=top_k))
 
     lines = [ln.strip() for ln in message.splitlines() if ln.strip()]
     if len(lines) > 1:
