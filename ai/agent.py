@@ -146,11 +146,15 @@ per item to ADD or REMOVE this turn, separated by semicolons. Format each entry 
 either in the menu context below or the customer's current order below - NEVER invent an id, and NEVER use an id \
 that isn't shown in one of those two places this turn. If the customer named something not in the menu context, do \
 NOT emit an ITEMS line for it - just say it's unavailable in your reply (per the rule above). If nothing should be \
-added or removed this turn (e.g. you're just answering a question, or still waiting on a clarifying answer), write \
-"ITEMS: none". Only include an item once the customer has clearly confirmed exactly what they want (size/variant \
-already resolved per the clarification-hints rule above) - don't add an item while a clarifying question about it \
-is still open. This ITEMS line is never shown to the customer and must be the very last line of your response, \
-nothing after it. Example response:
+added or removed this turn (e.g. you're just answering a question, confirming/restating the order back to the \
+customer without them asking for a change, or still waiting on a clarifying answer), write "ITEMS: none" - \
+critically, NEVER re-emit ADD for an item that's already in "Customer's current order" below unless the customer is \
+explicitly asking for MORE of it this turn, since re-adding it duplicates that line instead of just restating it, \
+and can also incorrectly reopen an order that was already finalized for the customer to confirm. Only include an \
+item once the customer has clearly confirmed exactly what they want (size/variant already resolved per the \
+clarification-hints rule above) - don't add an item while a clarifying question about it is still open. This ITEMS \
+line is never shown to the customer and must be the very last line of your response, nothing after it. Example \
+response:
 Sure! I've added 2 Chicken Biryani (Full) to your order. Would you like a drink with that?
 ITEMS: ADD id:482 qty:2
 

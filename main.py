@@ -610,7 +610,18 @@ def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict |
     (ai/agent.py's _parse_cart_actions) - this function's only job is to
     apply those decisions to the database, with no guessing of its own.
     Returns the (possibly newly-created) order, or the original order if no
-    actions were given."""
+    actions were given.
+
+    A REMOVE for an item not actually in the cart, or an ADD that's
+    rejected (out of stock), is a genuine no-op and must NOT revert an
+    awaiting_confirmation order back to draft - confirmed live: the AI can
+    emit an action referencing an item already fully accounted for (e.g.
+    restating the settled order back in a reply that also answers an
+    unrelated question), and reverting status for a no-op meant the
+    customer's subsequent "CONFIRM" no longer matched any
+    awaiting_confirmation order, so it silently fell through to a generic
+    AI reply instead of actually placing the order - the order stayed
+    'draft' forever despite the customer confirming."""
     if not actions:
         return order
 
@@ -618,18 +629,42 @@ def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict |
         item = change["item"]
         qty = change["qty"]
 
+        if change["action"] == "ADD" and not item.get("in_stock", True):
+            continue  # rejected outright - never touches order status
+
+        if order and order["status"] == "awaiting_confirmation":
+            if change["action"] == "REMOVE":
+                # No matching line to remove -> genuine no-op, skip without
+                # touching status (see docstring).
+                has_match = any(i["catalog_item_id"] == item["id"] for i in store.get_order_items(order["id"]))
+                if not has_match:
+                    continue
+            else:  # ADD
+                # Once an order is awaiting_confirmation, a duplicate ADD for
+                # an item already at the same-or-higher quantity is always a
+                # restatement, not a real addition - the customer would have
+                # to explicitly ask for more for the prompt to emit a higher
+                # qty than what's already there. Suppressing this is what
+                # stops a no-op ADD from reopening an order the customer is
+                # about to confirm (see docstring) - a genuine "add 2 more"
+                # still goes through since its qty exceeds the existing line.
+                existing_qty = sum(
+                    i["qty"] for i in store.get_order_items(order["id"])
+                    if i["catalog_item_id"] == item["id"]
+                )
+                if existing_qty >= qty:
+                    continue
+
         if not order or order["status"] not in ("draft", "awaiting_confirmation"):
             order_id = store.create_order(phone)
             order = store.get_order(order_id)
         elif order["status"] == "awaiting_confirmation":
-            # Customer is adding more items after seeing a total - revert to draft
-            # so the total gets recalculated before we ask for confirmation again.
+            # A real change is about to be applied - revert to draft so the
+            # total gets recalculated before we ask for confirmation again.
             store.set_order_status(order["id"], "draft")
             order = store.get_order(order["id"])
 
         if change["action"] == "ADD":
-            if not item.get("in_stock", True):
-                continue
             store.add_order_item(order["id"], item["id"], item["name"], item["price"], qty)
         else:  # REMOVE
             existing = [i for i in store.get_order_items(order["id"]) if i["catalog_item_id"] == item["id"]]
