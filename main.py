@@ -298,7 +298,7 @@ def _apply_delivery_address_label(phone: str, order: dict, address_text: str):
     order = store.get_order(order["id"])
     store.set_order_status(order["id"], "awaiting_confirmation")
 
-    order = _apply_cart_actions(phone, order, actions)
+    order = _apply_cart_actions(phone, order, _drop_restated_adds(order, actions))
     order = _apply_order_note(phone, order, note)
     escalation_note = ""
     if "confirm" not in reply.lower():
@@ -337,7 +337,7 @@ def _apply_delivery_text_address(phone: str, order: dict, address_text: str):
     order = store.get_order(order["id"])
     store.set_order_status(order["id"], "awaiting_confirmation")
 
-    order = _apply_cart_actions(phone, order, actions)
+    order = _apply_cart_actions(phone, order, _drop_restated_adds(order, actions))
     order = _apply_order_note(phone, order, note)
     escalation_note = ""
     if "confirm" not in reply.lower():
@@ -652,7 +652,7 @@ def _prompt_final_confirmation(phone: str, order: dict):
     synthetic_message = "I'll dine in at the restaurant." if is_dine_in else "I'll pick it up myself."
     label = "dine-in - no delivery fee" if is_dine_in else "pickup - no delivery fee"
     reply, actions, note, _address = generate_reply(synthetic_message, order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
-    order = _apply_cart_actions(phone, order, actions) or order
+    order = _apply_cart_actions(phone, order, _drop_restated_adds(order, actions)) or order
     order = _apply_order_note(phone, order, note) or order
     # _apply_cart_actions reverts an awaiting_confirmation order back to
     # draft if it changes the cart (see its docstring) - this function's
@@ -706,6 +706,25 @@ def _push_invoice_best_effort(order: dict, items: list):
         logger.exception("Billing invoice push failed for order #%s (non-fatal)", order["id"])
 
 
+
+
+def _drop_restated_adds(order: dict | None, actions: list) -> list:
+    """Strips any ADD action for an item already in the cart, for use
+    after a SYNTHETIC message (e.g. "I'll deliver to this address", "I'll
+    pick it up myself") that main.py generates internally, not something
+    the customer actually typed - confirmed live: responding to a
+    synthetic delivery-confirmation message, the model restated the
+    existing cart as part of its reply and got the quantity wrong (1
+    Alleppey Chicken Curry became "2 x" in the order summary), which
+    _apply_cart_actions' same-or-lower-qty dedup doesn't catch since the
+    restated qty was HIGHER, not the same. Since the customer couldn't
+    possibly have asked for more in a message they never sent, every ADD
+    for an item already in the cart is dropped outright here - a genuine
+    new item (not already in the cart) still goes through normally."""
+    if not actions or not order:
+        return actions
+    existing_ids = {i["catalog_item_id"] for i in store.get_order_items(order["id"])}
+    return [a for a in actions if not (a["action"] == "ADD" and a["item"]["id"] in existing_ids)]
 
 
 def _apply_cart_actions(phone: str, order: dict | None, actions: list) -> dict | None:
