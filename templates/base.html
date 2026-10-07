@@ -191,6 +191,7 @@
   function unlockAudio() {
     if (audioUnlocked) return;
     audioUnlocked = true;
+    requestNotificationPermission();
     var audio = document.getElementById('newOrderRingtone');
     if (audio) {
       var vol = audio.volume;
@@ -266,7 +267,40 @@
     stopTitleFlash();
   }
 
+  // OS-level desktop notification (Notification API) - fires alongside the
+  // in-page banner/ringtone so staff still get alerted even if the
+  // dashboard tab is minimized, behind other windows, or on a different
+  // virtual desktop, none of which the in-page banner can reach since it
+  // only exists inside that tab's own rendered page. Requires the user to
+  // have granted permission (requested once, on first interaction, from
+  // requestNotificationPermission() below) - silently does nothing if
+  // denied or unsupported, since the banner/ringtone already cover the
+  // tab-visible case on their own.
+  function showDesktopNotification(orders) {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      var title, body;
+      if (orders.length === 1) {
+        title = 'New order ' + orders[0].ref;
+        body = orders[0].order_type + ' - {{ currency }} ' + orders[0].total.toFixed(2);
+      } else {
+        title = orders.length + ' new orders';
+        body = orders.map(function (o) { return o.ref; }).join(', ');
+      }
+      var n = new Notification(title, { body: body, tag: 'new-order', requireInteraction: true });
+      n.onclick = function () { window.focus(); n.close(); };
+    } catch (e) { /* notification blocked/unsupported - banner/ringtone still cover it */ }
+  }
+
+  function requestNotificationPermission() {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }
+
   function showBanner(orders) {
+    showDesktopNotification(orders);
     var banner = document.getElementById('newOrderBanner');
     var text = document.getElementById('newOrderText');
     var sub = document.getElementById('newOrderSub');
