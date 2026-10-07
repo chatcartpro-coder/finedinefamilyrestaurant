@@ -129,9 +129,10 @@ confirm - extra sweet, or something else?").
 isn't listed anywhere, not even a close variant), don't refuse it and don't ask them to call separately - ALWAYS \
 take the order anyway. Add it as a real line item on their order using an ADDITEM: trailer line (see CART UPDATES \
 below), not just a note - this puts it on the printed receipt/kitchen ticket as an actual item, same as anything \
-else they ordered. Tell them clearly that the price for this item will be confirmed/mentioned at delivery, or they \
-can check with the restaurant directly at +971042847471 if they want to know the price now - never invent a price \
-for it yourself. If the menu context shows a close real variant (e.g. they ask for "Pista ice cream" but only \
+else they ordered. Tell them clearly that the price for this item will be confirmed/mentioned at delivery - never \
+invent a price for it yourself, and never give out the restaurant's phone number for this (that's only given after \
+the order is confirmed, as part of the delivery follow-up). If the menu context shows a close real variant (e.g. \
+they ask for "Pista ice cream" but only \
 "Mixed Ice Cream" is listed), mention that real option too so they can choose it instead if they'd rather have an \
 exact price now - but still add their original request if they want it anyway.
 - If a customer asks the price of a dish, state it clearly from the menu context, and add one brief, genuine \
@@ -245,10 +246,10 @@ flavor that isn't listed), add it as a REAL order line using a trailer line star
 followed by one entry per off-catalog item this turn, separated by semicolons, formatted as \
 '"<exact item name, your own clean wording>" qty:Q' (quotes required around the name, since there's no catalog id \
 for it). This is a real cart line on the receipt/kitchen ticket, not just a note - the restaurant sets the actual \
-price later. Always tell the customer plainly that the price will be confirmed/mentioned at delivery, or they can \
-call +971042847471 to ask now - never invent a price yourself. Example:
-Noted - I've added vanilla ice cream to your order. The restaurant will confirm the price at delivery, or you can \
-call +971042847471 to check now. Anything else?
+price later. Always tell the customer plainly that the price will be confirmed/mentioned at delivery - never invent \
+a price yourself, and never give out the restaurant's phone number here (that's only given after the order is \
+confirmed, as part of the delivery follow-up). Example:
+Noted - I've added vanilla ice cream to your order. The restaurant will confirm the price at delivery. Anything else?
 ITEMS: none
 ADDITEM: "Vanilla Ice Cream" qty:1
 
@@ -612,23 +613,39 @@ _ADDITEM_ACTION_RE = re.compile(r'"([^"]+)"\s+qty:(\d+(?:\.\d+)?)', re.IGNORECAS
 _SIZE_SUFFIX_RE = re.compile(r"\s*\((half|full)\)\s*$", re.IGNORECASE)
 
 
+_SPICE_WORDS_RE = re.compile(r"\b(extra\s+)?(spicy|mild|hot)\b\s*", re.IGNORECASE)
+
+
 def _match_real_catalog_item(name: str, allowed_items: dict) -> dict | None:
     """If an ADDITEM: name unambiguously matches exactly one real item
     shown this turn (see the ADDITEM: hard guard in _parse_cart_actions),
-    returns that item dict instead of treating it as off-catalog. Matches
-    the name ignoring a trailing "(Half)"/"(Full)" suffix on either side,
-    since that's exactly the case that was confirmed live to fail: a plain
-    "Butter Chicken" request matched against "Butter Chicken (Half)" /
-    "Butter Chicken (Full)" in the catalog. Returns None (stays
-    off-catalog) if zero or 2+ items match, since a 2+ match means size is
-    genuinely ambiguous and guessing one would be worse than asking."""
-    target = _SIZE_SUFFIX_RE.sub("", name).strip().lower()
-    if not target:
+    returns that item dict instead of treating it as off-catalog. Always
+    strips a spice-level word (spicy/mild/hot) first, since that was
+    confirmed live to break matching entirely: the AI folds the spice
+    clarification into the ADDITEM name itself (e.g. "Spicy Butter
+    Chicken (Full)"), which no catalog name would ever contain verbatim.
+    A trailing "(Half)"/"(Full)" size suffix is then matched exactly WHEN
+    PRESENT (it's what disambiguates which of two sized variants is
+    meant), but ignored on both sides when absent from the ADDITEM name,
+    since that's the earlier confirmed-live case: a plain "Butter
+    Chicken" request against a catalog that only lists "Butter Chicken
+    (Half)"/"(Full)" as separate rows. Returns None (stays off-catalog)
+    if zero or 2+ items match, since 2+ means size is genuinely ambiguous
+    and guessing one would be worse than asking."""
+    cleaned = _SPICE_WORDS_RE.sub("", name).strip()
+    if not cleaned:
         return None
-    matches = [
-        it for it in allowed_items.values()
-        if _SIZE_SUFFIX_RE.sub("", it["name"]).strip().lower() == target
-    ]
+    has_size = bool(_SIZE_SUFFIX_RE.search(cleaned))
+    target_lower = cleaned.lower()
+    target_no_size = _SIZE_SUFFIX_RE.sub("", cleaned).strip().lower()
+    matches = []
+    for it in allowed_items.values():
+        if has_size:
+            if it["name"].strip().lower() == target_lower:
+                matches.append(it)
+        else:
+            if _SIZE_SUFFIX_RE.sub("", it["name"]).strip().lower() == target_no_size:
+                matches.append(it)
     return matches[0] if len(matches) == 1 else None
 # Catches a reply claiming something was added to the order/cart
 # ("I've added 2 Chicken Dum Biryani to your order", "added to your cart",
@@ -688,6 +705,7 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
 
     text = raw_reply[:match.start()].rstrip()
     actions = []
+    additem_notes = []
     for verb, id_str, qty_str in _ITEMS_ACTION_RE.findall(match.group(1)):
         item_id = int(id_str)
         qty = float(qty_str)
@@ -718,6 +736,13 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
             catalog_match = _match_real_catalog_item(name, allowed_items)
             if catalog_match:
                 actions.append({"action": "ADD", "item": catalog_match, "qty": qty})
+                spice_word = _SPICE_WORDS_RE.search(name)
+                if spice_word:
+                    # The spice detail was folded into the ADDITEM name
+                    # itself (e.g. "Spicy Butter Chicken (Full)") - carry
+                    # it forward as a note so the kitchen still sees it,
+                    # since the real catalog item's name won't mention it.
+                    additem_notes.append(f"{catalog_match['name']}: {spice_word.group(0).strip().capitalize()}")
                 continue
             # id=None marks this as off-catalog throughout the pipeline
             # (main.py's _apply_cart_actions/store.add_order_item) - price
@@ -735,6 +760,8 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
         note_text = note_match.group(1).strip()
         if note_text and note_text.lower() != "none":
             note = note_text
+    if additem_notes:
+        note = "; ".join(additem_notes) if not note else f"{note}; {'; '.join(additem_notes)}"
 
     address = None
     address_match = _ADDRESS_LINE_RE.search(raw_reply, match.end())
