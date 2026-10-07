@@ -959,29 +959,46 @@ def get_all_messages(start: str = None, end: str = None):
     return [dict(zip(keys, row)) for row in cur.fetchall()]
 
 
-def get_orders_since(last_seen_id: int) -> list:
-    """Confirmed-or-later orders with id > last_seen_id, oldest first -
-    powers the admin dashboard's live new-order alert (popup + beep), polled
-    from the browser every few seconds (see base.html). Only confirmed+
-    orders count as "new" here (not draft/awaiting_confirmation), since
-    those aren't real orders yet."""
+def get_orders_since(last_seen_confirmed_at: str) -> list:
+    """Confirmed-or-later orders with confirmed_at > last_seen_confirmed_at,
+    oldest first - powers the admin dashboard's live new-order alert (popup
+    + beep), polled from the browser every few seconds (see base.html).
+    Only confirmed+ orders count as "new" here (not draft/
+    awaiting_confirmation), since those aren't real orders yet.
+
+    Deliberately keyed on confirmed_at, NOT the order's own internal id -
+    every order is first created as a draft (claiming an id) and only later
+    confirmed, often much later and never in id order relative to other
+    orders' confirmations. Using "id > last_seen_id" as the baseline (the
+    original implementation) meant a draft that existed before the admin
+    opened the dashboard would permanently never trigger an alert when it
+    was later confirmed, since its id was already <= the baseline - this
+    silently broke the alert for the normal case (draft, then confirm
+    later), confirmed by testing. confirmed_at has no such problem: it's
+    NULL until the order is actually confirmed, so comparing against it
+    only ever matches orders confirmed after the baseline moment, regardless
+    of when their row was first created."""
+    if not last_seen_confirmed_at:
+        last_seen_confirmed_at = ""
     conn = _get_conn()
     cur = conn.execute(f"""
         SELECT {_ORDER_COLUMNS}
         FROM orders
-        WHERE id > ? AND status IN ('confirmed', 'packed', 'picked_up', 'delivered')
-        ORDER BY id ASC
-    """, (last_seen_id,))
+        WHERE confirmed_at > ? AND status IN ('confirmed', 'packed', 'picked_up', 'delivered')
+        ORDER BY confirmed_at ASC
+    """, (last_seen_confirmed_at,))
     return [_order_row_to_dict(row) for row in cur.fetchall()]
 
 
-def get_latest_order_id() -> int:
-    """Highest order id that currently exists (any status) - used to
-    initialize the dashboard's "last seen" baseline on first page load, so
-    the alert doesn't fire for every pre-existing order the moment the admin
-    opens the dashboard."""
+def get_latest_confirmed_at() -> str:
+    """Highest confirmed_at that currently exists - used to initialize the
+    dashboard's "last seen" baseline on first page load, so the alert
+    doesn't fire for every pre-existing confirmed order the moment the
+    admin opens the dashboard. Empty string (not None) when there are no
+    confirmed orders yet, so it sorts before any real ISO timestamp and
+    get_orders_since's "> baseline" comparison still works correctly."""
     conn = _get_conn()
-    row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM orders").fetchone()
+    row = conn.execute("SELECT COALESCE(MAX(confirmed_at), '') FROM orders").fetchone()
     return row[0]
 
 

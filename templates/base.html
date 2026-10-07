@@ -109,14 +109,21 @@
   // initialized from /admin/orders/latest-id so existing orders never
   // trigger the alert the moment the dashboard is opened.
   var POLL_INTERVAL_MS = 8000;
-  var STORAGE_KEY = 'chatcartpro_last_seen_order_id';
+  // "last seen" is a confirmed_at ISO timestamp string (e.g.
+  // "2026-10-07T03:57:02.141+00:00"), NOT a numeric order id - an order's
+  // own internal id is claimed the moment it's created as a draft, often
+  // well before (and with no relation to) when it's actually confirmed, so
+  // comparing against it as the alert baseline silently missed real orders
+  // (see storage/store.py's get_orders_since docstring for the full story).
+  var STORAGE_KEY = 'chatcartpro_last_seen_confirmed_at';
 
   function getLastSeen() {
-    var v = parseInt(localStorage.getItem(STORAGE_KEY), 10);
-    return isNaN(v) ? null : v;
+    var v = localStorage.getItem(STORAGE_KEY);
+    return v || null;
   }
-  function setLastSeen(id) {
-    try { localStorage.setItem(STORAGE_KEY, String(id)); } catch (e) { /* storage unavailable, ignore */ }
+  function setLastSeen(value) {
+    if (!value) return;
+    try { localStorage.setItem(STORAGE_KEY, value); } catch (e) { /* storage unavailable, ignore */ }
   }
 
   function beep() {
@@ -168,15 +175,16 @@
   }
 
   function poll(lastSeen) {
-    fetch('/admin/orders/new?since=' + lastSeen, { credentials: 'same-origin' })
+    fetch('/admin/orders/new?since=' + encodeURIComponent(lastSeen || ''), { credentials: 'same-origin' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
         if (!data) return;
         if (data.orders && data.orders.length > 0) {
           showBanner(data.orders);
         }
-        setLastSeen(data.latest_id);
-        setTimeout(function () { poll(data.latest_id); }, POLL_INTERVAL_MS);
+        var next = data.latest_id || lastSeen;
+        setLastSeen(next);
+        setTimeout(function () { poll(next); }, POLL_INTERVAL_MS);
       })
       .catch(function () {
         // Network hiccup - just retry on the next interval rather than stopping polling entirely.
@@ -191,7 +199,7 @@
     fetch('/admin/orders/latest-id', { credentials: 'same-origin' })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (data) {
-        var baseline = data ? data.latest_id : 0;
+        var baseline = (data && data.latest_id) || '';
         setLastSeen(baseline);
         poll(baseline);
       })

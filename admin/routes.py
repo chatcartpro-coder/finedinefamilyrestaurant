@@ -232,8 +232,11 @@ def order_update_status(
 def orders_latest_id(admin=Depends(get_current_admin)):
     """Baseline for the dashboard's live new-order poll (see base.html) -
     called once on page load so the alert only fires for orders confirmed
-    AFTER the admin opened the dashboard, not every pre-existing one."""
-    return {"latest_id": store.get_latest_order_id()}
+    AFTER the admin opened the dashboard, not every pre-existing one.
+    Despite the "latest_id" key name (kept for frontend compatibility),
+    this is actually confirmed_at - see get_orders_since's docstring for
+    why that's necessary instead of the order's own internal id."""
+    return {"latest_id": store.get_latest_confirmed_at()}
 
 
 @router.get("/orders/{order_id}/print", response_class=HTMLResponse)
@@ -261,13 +264,17 @@ def order_print_receipt(order_id: int, request: Request, admin=Depends(get_curre
 
 
 @router.get("/orders/new")
-def orders_new_since(since: int = 0, admin=Depends(get_current_admin)):
+def orders_new_since(since: str = "", admin=Depends(get_current_admin)):
     """Polled every few seconds by the dashboard's live alert JS (base.html)
-    - returns any orders confirmed after `since` so the popup+beep can show
-    order #, type (delivery/pickup/dine-in), and total for each."""
+    - returns any orders confirmed after `since` (a confirmed_at timestamp,
+    despite the generic param name kept for frontend compatibility) so the
+    popup+beep can show order #, type (delivery/pickup/dine-in), and total
+    for each. See get_orders_since's docstring for why this is keyed on
+    confirmed_at rather than the order's own internal id."""
     new_orders = store.get_orders_since(since)
+    latest = max([o["confirmed_at"] for o in new_orders], default=since or store.get_latest_confirmed_at())
     return {
-        "latest_id": max([o["id"] for o in new_orders], default=since),
+        "latest_id": latest,
         "orders": [
             {
                 "id": o["id"],
