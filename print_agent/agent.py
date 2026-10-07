@@ -251,6 +251,53 @@ def _print(connection_type: str, printer_target: str, order: dict, store_name: s
         print_order(printer_target, order, store_name, currency)
 
 
+_popup_queue = None
+
+
+def _popup_worker(q):
+    """Runs all popups on one dedicated thread (Tk must stay on the thread
+    that created it). Each popup is topmost so it appears over every other
+    app until staff click OK."""
+    try:
+        import tkinter as tk
+    except Exception:
+        logger.warning("tkinter unavailable - desktop popup disabled")
+        return
+    while True:
+        title, body = q.get()
+        try:
+            root = tk.Tk()
+            root.title(title)
+            root.attributes("-topmost", True)
+            root.geometry("+200+120")
+            tk.Label(root, text=title, font=("Segoe UI", 20, "bold"), fg="#b00020", padx=40, pady=14).pack()
+            tk.Label(root, text=body, font=("Segoe UI", 14), justify="left", padx=40).pack()
+            tk.Button(root, text="OK", font=("Segoe UI", 14, "bold"), width=14, command=root.destroy).pack(pady=16)
+            root.lift()
+            root.focus_force()
+            root.mainloop()
+        except Exception:
+            logger.exception("Failed to show desktop popup")
+
+
+def show_order_popup(order: dict, currency: str):
+    """Always-on-top 'new order' window. Never blocks or breaks printing."""
+    global _popup_queue
+    try:
+        if _popup_queue is None:
+            import queue
+            import threading
+            _popup_queue = queue.Queue()
+            threading.Thread(target=_popup_worker, args=(_popup_queue,), daemon=True).start()
+        lines = [f"{i['qty']:g} x {i['name']}" for i in order.get("items", [])]
+        body = "\n".join(lines + ["", f"{order.get('order_type_label') or ''}   Total: {currency} {order['total']:.2f}"])
+        if order.get("notes"):
+            body += "\nNotes: " + order["notes"]
+        _popup_queue.put((f"NEW ORDER {order.get('order_code') or order['id']}", body))
+    except Exception:
+        logger.exception("Could not queue desktop popup")
+
+
 def run_once(server_url: str, token: str, connection_type: str, printer_target: str, store_name: str, currency: str,
              extra_printer_ips: list = None) -> int:
     orders = fetch_pending_orders(server_url, token)
@@ -275,6 +322,7 @@ def run_once(server_url: str, token: str, connection_type: str, printer_target: 
                     logger.exception("Failed to print order #%s to extra printer %s (non-fatal)", order["id"], extra_ip)
             acknowledge_order(server_url, token, order["id"])
             logger.info("Printed and acknowledged order #%s", order["id"])
+            show_order_popup(order, currency)
             printed += 1
         except Exception:
             logger.exception(
