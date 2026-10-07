@@ -22,11 +22,14 @@ _FUZZY_MATCH_THRESHOLD = 65
 # fuzzy-matched "Wheat Porotta" purely on coincidental letter overlap, which
 # broke the "no items found -> show menu categories" fallback for a generic
 # "what's on the menu?" question (ai/agent.py's MENU_BROWSE_PHRASES path).
-_FUZZY_STOP_WORDS = {
+CATALOG_FILLER_WORDS = {
     "hello", "hey", "hi", "please", "thanks", "thank", "want", "would",
     "like", "have", "whats", "what", "menu", "today", "order", "give",
     "need", "could", "can", "there", "available", "about", "your",
+    "price", "much", "you", "how", "get", "the", "and", "for", "with",
+    "this", "that", "any", "some", "does", "much",
 }
+_FUZZY_STOP_WORDS = CATALOG_FILLER_WORDS
 
 
 def _init_schema():
@@ -129,11 +132,15 @@ def search_items(query: str, limit: int = 8):
         FROM catalog_items
         WHERE name LIKE ? OR category LIKE ?
         ORDER BY in_stock DESC, name
-        LIMIT ?
-    """, (like, like, limit))
+        LIMIT 200
+    """, (like, like))
     results = [_row_to_dict(row) for row in cur.fetchall()]
     if results:
-        return results
+        # Rank by relevance, not alphabetically - a common word like
+        # "chicken" matches dozens of dishes and a plain alphabetical cut
+        # to `limit` dropped the actual dish asked about.
+        results.sort(key=lambda r: (-r["in_stock"], -word_match_score(query, r["name"])))
+        return results[:limit]
 
     # Don't fuzzy-match a query that's entirely conversational filler (e.g.
     # "hello", "whats on the menu") - nothing meaningful would survive to
@@ -147,7 +154,7 @@ def search_items(query: str, limit: int = 8):
     return _fuzzy_search_items(query, limit)
 
 
-def _word_match_score(query: str, name: str) -> float:
+def word_match_score(query: str, name: str) -> float:
     """Average, over each significant word in the query, of that word's best
     fuzz.ratio against any significant word in the item name - handles
     spelling variants of individual dish-name words (idli/idly, dosa/dossa)
@@ -156,7 +163,8 @@ def _word_match_score(query: str, name: str) -> float:
     unrelated item names (confirmed: partial_ratio alone ranked "Chilli
     Potato" above "Idly Set" for the query "idli"). Words under 3 characters
     are ignored on both sides - too short to carry real signal."""
-    q_words = [w for w in query.lower().split() if len(w) >= 3]
+    all_q_words = [w for w in query.lower().split() if len(w) >= 3]
+    q_words = [w for w in all_q_words if w not in CATALOG_FILLER_WORDS] or all_q_words
     n_words = [w.strip("()") for w in name.lower().split() if len(w.strip("()")) >= 3]
     if not q_words or not n_words:
         return 0.0
@@ -167,10 +175,10 @@ def _fuzzy_search_items(query: str, limit: int) -> list:
     conn = _get_conn()
     cur = conn.execute("""
         SELECT id, sku, name, category, unit, price, stock_qty, in_stock, image_url, source, updated_at
-        FROM catalog_items WHERE in_stock = 1 AND stock_qty > 0
+        FROM catalog_items
     """)
     rows = [_row_to_dict(row) for row in cur.fetchall()]
-    scored = [(r, _word_match_score(query, r["name"])) for r in rows]
+    scored = [(r, word_match_score(query, r["name"])) for r in rows]
     scored = [(r, s) for r, s in scored if s >= _FUZZY_MATCH_THRESHOLD]
     scored.sort(key=lambda pair: -pair[1])
     return [r for r, _s in scored[:limit]]

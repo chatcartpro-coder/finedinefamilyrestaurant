@@ -543,10 +543,14 @@ def search_catalog_for_message(message: str, top_k: int = 16) -> list:
         for line in lines:
             _add(catalog_store.search_items(line, limit=4))
 
-    words = [w for w in re.findall(r"[a-zA-Z]{3,}", message) if w.lower() not in {"the", "and", "for", "with"}]
+    words = [w for w in re.findall(r"[a-zA-Z]{3,}", message) if w.lower() not in catalog_store.CATALOG_FILLER_WORDS]
     for w in words:
-        _add(catalog_store.search_items(w, limit=4))
+        _add(catalog_store.search_items(w, limit=12))
 
+    # Keep the most relevant items when truncating, not whichever word
+    # happened to surface them first. Stable sort preserves discovery order
+    # among equal scores.
+    combined.sort(key=lambda it: -catalog_store.word_match_score(message, it["name"]))
     return combined[:top_k]
 
 
@@ -946,6 +950,18 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         catalog_items = category_items
     else:
         catalog_items = search_catalog_for_message(customer_message)
+        # A bare follow-up like "how much is it?" has no dish word - fall back
+        # to the customer's previous message so the dish just discussed is
+        # still in context and gets a real price.
+        if not catalog_items:
+            sig_words = [
+                w for w in re.findall(r"[a-zA-Z]{3,}", customer_message)
+                if w.lower() not in catalog_store.CATALOG_FILLER_WORDS
+            ]
+            if not sig_words:
+                prev = next((t for d, t in reversed(history or []) if d == "in" and t != customer_message), None)
+                if prev:
+                    catalog_items = search_catalog_for_message(prev)
         # search_catalog_for_message only looks at THIS turn's text, so a
         # dish named a turn or two ago (e.g. while the AI was still asking
         # a clarifying question about it) drops out of allowed_items the
