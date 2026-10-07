@@ -192,9 +192,30 @@ def print_order_bluetooth(printer_port: str, order: dict, store_name: str, curre
         printer.close()
 
 
+def print_order_windows(printer_name: str, order: dict, store_name: str, currency: str):
+    """Prints via a printer already installed in Windows (Settings ->
+    Printers & scanners), going through the normal Windows print
+    spooler instead of opening our own raw TCP/network socket to the
+    printer. Needed when the same printer is shared with other software
+    (e.g. existing KOT/POS software) that also prints to it through its
+    Windows driver - confirmed live that print_order's raw Network
+    connection (its own direct socket, bypassing Windows entirely)
+    conflicted with that software's KOT print jobs, since most thermal
+    printers only properly service one connection "style" at a time."""
+    from escpos.printer import Win32Raw
+
+    printer = Win32Raw(printer_name)
+    try:
+        _write_receipt(printer, order, store_name, currency)
+    finally:
+        printer.close()
+
+
 def _print(connection_type: str, printer_target: str, order: dict, store_name: str, currency: str):
     if connection_type == "bluetooth":
         print_order_bluetooth(printer_target, order, store_name, currency)
+    elif connection_type == "windows":
+        print_order_windows(printer_target, order, store_name, currency)
     else:
         print_order(printer_target, order, store_name, currency)
 
@@ -234,8 +255,9 @@ def main():
     parser = argparse.ArgumentParser(description="Fine Dine Family Restaurant print agent - polls for confirmed orders and prints them.")
     parser.add_argument("--server-url", default=os.getenv("PRINT_AGENT_SERVER_URL"), help="Cloud app base URL, e.g. https://your-app.onrender.com")
     parser.add_argument("--token", default=os.getenv("PRINT_AGENT_TOKEN"), help="Shared print agent token (matches PRINT_AGENT_TOKEN in the server's .env)")
-    parser.add_argument("--printer-ip", default=os.getenv("PRINT_AGENT_PRINTER_IP"), help="Network printer's IP address (for WiFi/Ethernet printers)")
+    parser.add_argument("--printer-ip", default=os.getenv("PRINT_AGENT_PRINTER_IP"), help="Network printer's IP address (for WiFi/Ethernet printers) - opens its own direct TCP connection, which can conflict with other software (e.g. existing KOT/POS software) printing to the same printer through its Windows driver. Prefer --printer-name if that's your setup.")
     parser.add_argument("--printer-port", default=os.getenv("PRINT_AGENT_PRINTER_PORT"), help="Serial/COM port (for Bluetooth-paired printers, e.g. COM5 or /dev/rfcomm0)")
+    parser.add_argument("--printer-name", default=os.getenv("PRINT_AGENT_PRINTER_NAME"), help="Name of a printer already installed in Windows (Settings > Printers & scanners) - prints through the normal Windows spooler instead of a direct network connection, so it coexists with other software (e.g. existing KOT/POS software) sharing the same printer.")
     parser.add_argument("--store-name", default=os.getenv("PRINT_AGENT_STORE_NAME", "Fine Dine Family Restaurant"))
     parser.add_argument("--currency", default=os.getenv("PRINT_AGENT_CURRENCY", "AED"))
     parser.add_argument("--interval", type=int, default=int(os.getenv("PRINT_AGENT_INTERVAL", "10")), help="Seconds between polls")
@@ -247,13 +269,16 @@ def main():
         print(f"Missing required setting(s): {', '.join(missing)} (pass as a flag or set the matching env var)")
         sys.exit(1)
 
-    if args.printer_ip and args.printer_port:
-        print("Specify only one of --printer-ip (network printer) or --printer-port (Bluetooth/USB printer), not both.")
+    given = [name for name, val in [("--printer-ip", args.printer_ip), ("--printer-port", args.printer_port), ("--printer-name", args.printer_name)] if val]
+    if len(given) > 1:
+        print(f"Specify only one of --printer-ip, --printer-port, or --printer-name, not multiple ({', '.join(given)} given).")
         sys.exit(1)
 
     server_url = args.server_url.rstrip("/")
 
-    if args.printer_ip:
+    if args.printer_name:
+        connection_type, printer_target = "windows", args.printer_name
+    elif args.printer_ip:
         connection_type, printer_target = "network", args.printer_ip
     elif args.printer_port:
         connection_type, printer_target = "bluetooth", args.printer_port
