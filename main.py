@@ -281,17 +281,25 @@ def _apply_delivery_address_label(phone: str, order: dict, address_text: str):
     coordinates already saved (see storage.store.set_order_delivery_address_label).
     This is what actually unblocks needs_delivery_address and moves the
     order to awaiting_confirmation - a pin by itself never does."""
-    store.set_order_delivery_address_label(order["id"], address_text)
-    store.set_customer_address_text(phone, address_text)
-    order = store.get_order(order["id"])
-    store.set_order_status(order["id"], "awaiting_confirmation")
-
     customer = store.get_customer(phone)
     order_items = store.get_order_items(order["id"])
-    reply, actions, note = generate_reply(
+    reply, actions, note, clean_address = generate_reply(
         f"My door/unit number is: {address_text}", order, order_items,
         customer=customer, history=store.get_recent_history(phone),
     )
+    # Prefer the AI's cleaned extraction (e.g. "Room 305, 3rd Floor") over
+    # the raw message - confirmed live that saving the raw text verbatim
+    # produced an unreadable paragraph on the printed receipt when the
+    # customer mixed in order commentary ("I already placed the order...")
+    # alongside the actual address. Falls back to the raw text if the model
+    # didn't return an ADDRESS: line for some reason, so this never ends up
+    # with no address saved at all.
+    saved_address = clean_address or address_text
+    store.set_order_delivery_address_label(order["id"], saved_address)
+    store.set_customer_address_text(phone, saved_address)
+    order = store.get_order(order["id"])
+    store.set_order_status(order["id"], "awaiting_confirmation")
+
     order = _apply_cart_actions(phone, order, actions)
     order = _apply_order_note(phone, order, note)
     escalation_note = ""
@@ -313,19 +321,24 @@ def _apply_delivery_text_address(phone: str, order: dict, address_text: str):
     the label, so a customer who later shares real coordinates against a
     different address won't have this stale text label silently attached to
     them)."""
-    store.upsert_customer(phone, label=address_text)
-    store.set_customer_address_text(phone, address_text)
-    delivery_fee = compute_delivery_fee(order["subtotal"])
-    store.set_order_delivery_text(order["id"], address_text, delivery_fee)
-    order = store.get_order(order["id"])
-    store.set_order_status(order["id"], "awaiting_confirmation")
-
     customer = store.get_customer(phone)
     order_items = store.get_order_items(order["id"])
-    reply, actions, note = generate_reply(
+    reply, actions, note, clean_address = generate_reply(
         f"I'll deliver to this address: {address_text}", order, order_items,
         customer=customer, history=store.get_recent_history(phone),
     )
+    # Prefer the AI's cleaned extraction over the raw message, same reason
+    # as _apply_delivery_address_label - detect_probable_address only
+    # loosely flags "this looks address-ish", so the raw text can still
+    # contain order commentary mixed in with the real address.
+    saved_address = clean_address or address_text
+    store.upsert_customer(phone, label=saved_address)
+    store.set_customer_address_text(phone, saved_address)
+    delivery_fee = compute_delivery_fee(order["subtotal"])
+    store.set_order_delivery_text(order["id"], saved_address, delivery_fee)
+    order = store.get_order(order["id"])
+    store.set_order_status(order["id"], "awaiting_confirmation")
+
     order = _apply_cart_actions(phone, order, actions)
     order = _apply_order_note(phone, order, note)
     escalation_note = ""
@@ -601,10 +614,22 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
     order_items = store.get_order_items(order["id"]) if order else []
     customer = store.get_customer(phone)
     history = store.get_recent_history(phone, limit=10)
-    reply, actions, note = generate_reply(text, order, order_items, customer=customer, history=history)
+    reply, actions, note, address = generate_reply(text, order, order_items, customer=customer, history=history)
 
     order = _apply_cart_actions(phone, order, actions)
     _apply_order_note(phone, order, note)
+
+    # Safety net: if the gates above somehow didn't route this message as
+    # the door-number follow-up (e.g. the customer answered it in a later
+    # turn than expected) but the AI still recognized and extracted an
+    # address from it, save that cleaned text rather than losing it -
+    # still never saves the raw, possibly-paragraph-length message.
+    if (
+        address and order and order.get("delivery_lat") is not None
+        and not order.get("delivery_address_text") and not order.get("is_pickup")
+    ):
+        store.set_order_delivery_address_label(order["id"], address)
+        store.set_customer_address_text(phone, address)
 
     _send(phone, reply)
 
@@ -619,7 +644,7 @@ def _prompt_final_confirmation(phone: str, order: dict):
     is_dine_in = order.get("order_type") == "dine_in"
     synthetic_message = "I'll dine in at the restaurant." if is_dine_in else "I'll pick it up myself."
     label = "dine-in - no delivery fee" if is_dine_in else "pickup - no delivery fee"
-    reply, actions, note = generate_reply(synthetic_message, order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
+    reply, actions, note, _address = generate_reply(synthetic_message, order, items, customer=store.get_customer(phone), history=store.get_recent_history(phone))
     order = _apply_cart_actions(phone, order, actions) or order
     order = _apply_order_note(phone, order, note) or order
     # _apply_cart_actions reverts an awaiting_confirmation order back to

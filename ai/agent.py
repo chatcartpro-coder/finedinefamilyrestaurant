@@ -183,6 +183,18 @@ Sure! I've added 2 Chicken Biryani (Full) to your order, extra spicy as requeste
 ITEMS: ADD id:482 qty:2
 NOTE: Extra spicy
 
+If the customer's message this turn contains their door/apartment/villa number and/or building name/landmark (they're \
+answering "could you share your door/apartment/villa number" or similar), add a THIRD trailer line starting with \
+exactly "ADDRESS:" followed by ONLY the clean address/location details extracted from their message - building name, \
+room/flat/villa number, floor, landmark - nothing else. Strip out anything that isn't actually part of the address: \
+if they also mention order items, say thanks, explain they already placed the order, or add other commentary in the \
+same message, leave all of that out of the ADDRESS line entirely (that part of their message, e.g. an item change, \
+is still handled normally via the ITEMS/NOTE lines - ADDRESS is only the pure location text). Example: customer \
+writes "I would like only one Ghee Masala Dosa. I have already placed the order. My building is Middle East \
+Building, Room No. 305, 3rd Floor. Please deliver it to my room thank you" -> ADDRESS: Middle East Building, Room \
+305, 3rd Floor (not the whole message). Omit the ADDRESS line entirely if this turn's message has no address/door \
+information in it.
+
 Menu context (items relevant to this conversation):
 {catalog_context}
 
@@ -447,24 +459,32 @@ def detect_probable_address(message: str) -> bool:
 _ITEMS_LINE_RE = re.compile(r"^ITEMS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _ITEMS_ACTION_RE = re.compile(r"(ADD|REMOVE)\s+id:(\d+)\s+qty:(\d+(?:\.\d+)?)", re.IGNORECASE)
 _NOTE_LINE_RE = re.compile(r"^NOTE:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_ADDRESS_LINE_RE = re.compile(r"^ADDRESS:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 
 
-def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list, str | None]:
+def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list, str | None, str | None]:
     """Splits the AI's raw response into (customer_facing_text, actions,
-    note). The ITEMS:/NOTE: trailer lines (see SYSTEM_PROMPT_TEMPLATE's
-    "CART UPDATES" section) are stripped out entirely before anything is
-    sent to the customer - they're machine-readable instructions to this
-    code, never customer-visible. `allowed_items` is {id: item_dict} for
-    exactly the catalog items shown to the model THIS turn (see
-    generate_reply) - an action referencing any other id is dropped, so the
-    model can never cause an item the customer didn't actually see offered
-    to be added to their order, even if it hallucinates an id. `note` is
-    the special-request text (e.g. "extra crispy", "no sambar, extra red
-    chutney") to attach to the order via storage.store.add_order_note, or
-    None if the model didn't include a NOTE: line this turn."""
+    note, address). The ITEMS:/NOTE:/ADDRESS: trailer lines (see
+    SYSTEM_PROMPT_TEMPLATE's "CART UPDATES" section) are stripped out
+    entirely before anything is sent to the customer - they're
+    machine-readable instructions to this code, never customer-visible.
+    `allowed_items` is {id: item_dict} for exactly the catalog items shown
+    to the model THIS turn (see generate_reply) - an action referencing any
+    other id is dropped, so the model can never cause an item the customer
+    didn't actually see offered to be added to their order, even if it
+    hallucinates an id. `note` is the special-request text (e.g. "extra
+    crispy", "no sambar, extra red chutney") to attach to the order via
+    storage.store.add_order_note, or None if the model didn't include a
+    NOTE: line this turn. `address` is the clean door/unit-number text the
+    model extracted from the customer's message (see main.py's
+    _apply_delivery_address_label), discarding any order-change/commentary
+    text mixed into the same message - confirmed live that saving the raw
+    customer message verbatim as the address produced an unreadable
+    paragraph on the printed receipt instead of just "Room 305, 3rd
+    Floor". None if the model didn't include an ADDRESS: line this turn."""
     match = _ITEMS_LINE_RE.search(raw_reply)
     if not match:
-        return raw_reply.strip(), [], None
+        return raw_reply.strip(), [], None, None
 
     text = raw_reply[:match.start()].rstrip()
     actions = []
@@ -482,19 +502,27 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
         if note_text and note_text.lower() != "none":
             note = note_text
 
-    return text, actions, note
+    address = None
+    address_match = _ADDRESS_LINE_RE.search(raw_reply, match.end())
+    if address_match:
+        address_text = address_match.group(1).strip()
+        if address_text and address_text.lower() != "none":
+            address = address_text
+
+    return text, actions, note, address
 
 
-def generate_reply(customer_message: str, order: dict | None, order_items: list, customer: dict | None = None, history: list = None) -> tuple[str, list, str | None]:
-    """Returns (reply_text, cart_actions, note) - cart_actions is a list of
-    {"action": "ADD"|"REMOVE", "item": <catalog item dict>, "qty": float},
-    already validated against the catalog items shown to the model this
-    turn, and note is a special-request string to attach to the order (or
-    None) - see _parse_cart_actions. Replaces the old regex-based
-    _apply_cart_updates in main.py entirely: the AI itself decides what to
-    add/remove, grounded in the exact menu context it was shown, instead of
-    a second independent guesser risking a different (possibly wrong) item
-    from what the AI told the customer was added."""
+def generate_reply(customer_message: str, order: dict | None, order_items: list, customer: dict | None = None, history: list = None) -> tuple[str, list, str | None, str | None]:
+    """Returns (reply_text, cart_actions, note, address) - cart_actions is a
+    list of {"action": "ADD"|"REMOVE", "item": <catalog item dict>, "qty":
+    float}, already validated against the catalog items shown to the model
+    this turn; note is a special-request string to attach to the order (or
+    None); address is a cleaned door/unit-number string extracted from the
+    customer's message (or None) - see _parse_cart_actions. Replaces the old
+    regex-based _apply_cart_updates in main.py entirely: the AI itself
+    decides what to add/remove, grounded in the exact menu context it was
+    shown, instead of a second independent guesser risking a different
+    (possibly wrong) item from what the AI told the customer was added."""
     catalog_items = search_catalog_for_message(customer_message)
     # A generic "what's on the menu?" question names no specific dish, so
     # the keyword search above legitimately finds nothing - fall back to

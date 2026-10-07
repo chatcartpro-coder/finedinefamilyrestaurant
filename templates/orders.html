@@ -70,7 +70,7 @@
         {% else %}<span class="muted">-</span>{% endif %}
       </td>
       <td>{{ o.created_at|local_time }}</td>
-      <td>{% if o.status != 'draft' %}<a class="btn btn-outline" href="/admin/orders/{{ o.id }}/print" target="_blank">Print</a>{% endif %}</td>
+      <td>{% if o.status in ('confirmed', 'packed', 'picked_up', 'delivered') %}<a class="btn btn-outline" href="/admin/orders/{{ o.id }}/print" target="_blank">Print</a>{% endif %}</td>
     </tr>
     {% else %}
     <tr><td colspan="14" class="muted">No orders in this range</td></tr>

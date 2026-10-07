@@ -252,6 +252,12 @@ def order_print_receipt(order_id: int, request: Request, admin=Depends(get_curre
     order = store.get_order(order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    if order["status"] not in ("confirmed", "packed", "picked_up", "delivered"):
+        # Printing before the customer actually confirms produced a
+        # misleading receipt (no confirmed timestamp, order could still
+        # change) - confirmed live, order #4 was printed while still
+        # awaiting_confirmation and showed "Confirmed: -".
+        raise HTTPException(status_code=400, detail="This order hasn't been confirmed by the customer yet - nothing to print.")
     items = store.get_order_items(order_id)
     customer = store.get_customer(order["phone"])
     excl_vat, vat_amount = vat_breakdown(order["total"])
