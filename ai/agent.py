@@ -641,9 +641,10 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
     before = [dict(a) for a in actions]
     actions = _correct_single_add_quantity(customer_message, actions)
     logger.info(
-        "generate_reply: customer_message=%r raw_items_line=%r actions_before=%r actions_after=%r",
-        customer_message, _ITEMS_LINE_RE.search(raw_reply).group(0) if _ITEMS_LINE_RE.search(raw_reply) else None,
-        before, actions,
+        "generate_reply: customer_message=%r catalog_items_shown=%r raw_items_line=%r actions_before=%r actions_after=%r reply_text=%r",
+        customer_message, [it["name"] for it in catalog_items],
+        _ITEMS_LINE_RE.search(raw_reply).group(0) if _ITEMS_LINE_RE.search(raw_reply) else None,
+        before, actions, text,
     )
     return text, actions, note, address
 
