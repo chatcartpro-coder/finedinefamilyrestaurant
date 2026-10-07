@@ -504,6 +504,33 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
                     "and I'll place it for you!",
                 )
                 return
+            # Hard guard, not just a prompt instruction: a delivery order
+            # must have a door/unit number (delivery_address_text) before it
+            # can actually be confirmed - confirmed live that an order could
+            # otherwise reach "awaiting_confirmation" via the AI-driven reply
+            # path (ai/agent.py's conversational prompt-only instruction)
+            # with delivery_lat/delivery_address_text still both empty,
+            # producing a receipt/printout with no address at all. This
+            # can't rely on the prompt alone since the model doesn't always
+            # follow it under multi-turn/multi-item pressure.
+            is_delivery_order = order.get("order_type") not in ("pickup", "dine_in") and not order.get("is_pickup")
+            if is_delivery_order and order.get("delivery_lat") is None and not order.get("delivery_address_text"):
+                _send(
+                    phone,
+                    "Before I place this order - where should we deliver it? Share your location (paperclip -> "
+                    "Location) or just type your delivery address, including door/apartment/villa number.",
+                )
+                return
+            if is_delivery_order and order.get("delivery_lat") is not None and not order.get("delivery_address_text"):
+                # A pin was shared but the door/unit number follow-up never
+                # landed (e.g. the customer typed "confirm" instead of a
+                # door number) - still can't confirm without it.
+                _send(
+                    phone,
+                    "Almost there - could you share your door/apartment/villa number and any landmark so the rider "
+                    "can find you exactly?",
+                )
+                return
             _confirm_order(phone, order)
             return
         if intent == "cancel":
