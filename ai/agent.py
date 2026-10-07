@@ -13,6 +13,7 @@ unambiguously affirms the exact confirmation prompt moves an order to
 free-form judgement, so a customer can never accidentally place an order.
 """
 import base64
+import logging
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -22,6 +23,8 @@ from ai.openrouter_client import chat_completion
 from ai.ordering_knowledge import get_clarification_hints
 from catalog import store as catalog_store
 from offers import store as offers_store
+
+logger = logging.getLogger("finedine-agent")
 
 CONFIRM_WORDS = {"confirm", "yes", "yep", "yeah", "ok", "okay", "place order", "place the order", "sure", "go ahead"}
 CANCEL_WORDS = {"cancel", "no", "nope", "stop", "wait", "change"}
@@ -605,7 +608,13 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
                 "price": oi["unit_price_snapshot"], "in_stock": True,
             }
     text, actions, note, address = _parse_cart_actions(raw_reply, allowed_items)
+    before = [dict(a) for a in actions]
     actions = _correct_single_add_quantity(customer_message, actions)
+    logger.info(
+        "generate_reply: customer_message=%r raw_items_line=%r actions_before=%r actions_after=%r",
+        customer_message, _ITEMS_LINE_RE.search(raw_reply).group(0) if _ITEMS_LINE_RE.search(raw_reply) else None,
+        before, actions,
+    )
     return text, actions, note, address
 
 
@@ -634,20 +643,34 @@ def _correct_single_add_quantity(customer_message: str, actions: list) -> list:
     been confirmed live to ignore an explicit prompt rule and add the wrong
     quantity (customer said "1 chicken dum biriyani", model added qty 2,
     then repeated the same wrong qty even after the customer corrected it
-    to "1 biriyani"). Only applies when there's exactly ONE ADD action this
-    turn and the customer's message clearly states a quantity - multi-item
-    messages ("2 biryani and 3 cokes") are left alone since a single
-    leading number can't be safely attributed to a specific item among
-    several."""
+    to "1 biriyani") - including by splitting one item into TWO separate
+    ADD actions for the same id (e.g. "ADD id:482 qty:1; ADD id:482
+    qty:1"), which _apply_cart_actions applies as two additions, still
+    ending up at qty 2 even though each individual action said qty 1 -
+    confirmed live as the actual mechanism behind a recurrence after the
+    first single-action fix. First collapses multiple ADD actions for the
+    same item into one (summing their qty), then applies the same
+    stated-quantity override. Only applies when, after collapsing, there's
+    exactly ONE ADD action and no other action this turn, and the
+    customer's message clearly states a quantity - multi-item messages \
+    ("2 biryani and 3 cokes") are left alone since a single leading number \
+    can't be safely attributed to a specific item among several genuinely \
+    different ones."""
     add_actions = [a for a in actions if a["action"] == "ADD"]
-    if len(add_actions) != 1 or len(actions) != 1:
+    other_actions = [a for a in actions if a["action"] != "ADD"]
+    add_item_ids = {a["item"]["id"] for a in add_actions}
+    if other_actions or len(add_item_ids) != 1:
         return actions
+
+    collapsed_qty = sum(a["qty"] for a in add_actions)
+    collapsed = dict(add_actions[0])
+    collapsed["qty"] = collapsed_qty
+
     stated_qty = _extract_stated_quantity(customer_message)
-    if stated_qty is None or stated_qty == actions[0]["qty"]:
-        return actions
-    corrected = dict(actions[0])
-    corrected["qty"] = float(stated_qty)
-    return [corrected]
+    if stated_qty is not None and stated_qty != collapsed_qty:
+        collapsed["qty"] = float(stated_qty)
+
+    return [collapsed]
 
 
 def _guess_dish_name_from_image(image_bytes: bytes, mime_type: str, caption: str = "") -> str:
