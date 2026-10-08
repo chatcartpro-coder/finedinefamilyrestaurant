@@ -317,7 +317,10 @@ def run_once(server_url: str, token: str, connection_type: str, printer_target: 
             # not re-printing on the next poll.
             for extra_ip in (extra_printer_ips or []):
                 try:
-                    print_order(extra_ip, order, store_name, currency)
+                    if extra_ip.lower().startswith("win:"):
+                        print_order_windows(extra_ip[4:].strip(), order, store_name, currency)
+                    else:
+                        print_order(extra_ip, order, store_name, currency)
                 except Exception:
                     logger.exception("Failed to print order #%s to extra printer %s (non-fatal)", order["id"], extra_ip)
             acknowledge_order(server_url, token, order["id"])
@@ -389,6 +392,7 @@ def main():
     parser.add_argument("--store-name", default=os.getenv("PRINT_AGENT_STORE_NAME", "Fine Dine Family Restaurant"))
     parser.add_argument("--currency", default=os.getenv("PRINT_AGENT_CURRENCY", "AED"))
     parser.add_argument("--interval", type=int, default=int(os.getenv("PRINT_AGENT_INTERVAL", "3")), help="Seconds between polls")
+    parser.add_argument("--list-printers", action="store_true", help="List Windows printer names (for printer_name / win: entries) and exit")
     parser.add_argument("--once", action="store_true", help="Print any pending orders once and exit, instead of polling forever")
     parser.add_argument(
         "--extra-printer-ip", action="append", default=None,
@@ -397,6 +401,12 @@ def main():
              "Always a direct network connection regardless of the primary printer's connection type.",
     )
     args = parser.parse_args()
+    if args.list_printers:
+        import win32print
+        for flags, _desc, name, _comment in win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS):
+            print(name)
+        input("Press Enter to close...")
+        sys.exit(0)
     extra_printer_ips = args.extra_printer_ip or [
         ip.strip() for ip in os.getenv("PRINT_AGENT_EXTRA_PRINTER_IPS", "").split(",") if ip.strip()
     ]
