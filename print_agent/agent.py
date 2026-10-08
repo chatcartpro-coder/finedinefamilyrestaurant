@@ -426,7 +426,39 @@ def _load_config_ini():
             os.environ[env] = val
 
 
+def _pause():
+    """Wait for Enter only when there is a console (hidden/background runs have none)."""
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            input("Press Enter to close...")
+    except Exception:
+        pass
+
+
+def _setup_background_runtime():
+    """When running hidden (no console): log to agent.log beside the exe and
+    allow only one running copy (a 5-minute scheduled task relaunches it if
+    it ever stops, and a second copy must exit silently)."""
+    import socket
+    if sys.stdout is None or sys.stderr is None or not sys.stderr.isatty():
+        base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+        try:
+            from logging.handlers import RotatingFileHandler
+            fh = RotatingFileHandler(os.path.join(base, "agent.log"), maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            logging.getLogger().addHandler(fh)
+        except Exception:
+            pass
+    lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        lock.bind(("127.0.0.1", 47831))
+    except OSError:
+        sys.exit(0)  # another copy is already running
+    globals()["_instance_lock"] = lock
+
+
 def main():
+    _setup_background_runtime()
     _load_config_ini()
     if getattr(sys, "frozen", False):
         # python-escpos can't locate its own capabilities.json inside a
@@ -456,7 +488,7 @@ def main():
         import win32print
         for flags, _desc, name, _comment in win32print.EnumPrinters(win32print.PRINTER_ENUM_LOCAL | win32print.PRINTER_ENUM_CONNECTIONS):
             print(name)
-        input("Press Enter to close...")
+        _pause()
         sys.exit(0)
     extra_printer_ips = args.extra_printer_ip or [
         ip.strip() for ip in os.getenv("PRINT_AGENT_EXTRA_PRINTER_IPS", "").split(",") if ip.strip()
@@ -510,8 +542,8 @@ if __name__ == "__main__":
         main()
     except SystemExit as e:
         if e.code not in (0, None):
-            input("Press Enter to close...")
+            _pause()
         raise
     except Exception:
         logger.exception("Print agent crashed")
-        input("Press Enter to close...")
+        _pause()
