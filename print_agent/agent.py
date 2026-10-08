@@ -374,6 +374,12 @@ def _load_config_ini():
 
 def main():
     _load_config_ini()
+    if getattr(sys, "frozen", False):
+        # python-escpos can't locate its own capabilities.json inside a
+        # PyInstaller bundle (confirmed live: FileNotFoundError on first print).
+        os.environ.setdefault(
+            "ESCPOS_CAPABILITIES_FILE", os.path.join(sys._MEIPASS, "escpos", "capabilities.json")
+        )
     parser = argparse.ArgumentParser(description="Fine Dine Family Restaurant print agent - polls for confirmed orders and prints them.")
     parser.add_argument("--server-url", default=os.getenv("PRINT_AGENT_SERVER_URL"), help="Cloud app base URL, e.g. https://your-app.onrender.com")
     parser.add_argument("--token", default=os.getenv("PRINT_AGENT_TOKEN"), help="Shared print agent token (matches PRINT_AGENT_TOKEN in the server's .env)")
