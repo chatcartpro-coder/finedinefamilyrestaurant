@@ -280,6 +280,20 @@ def _popup_worker(q):
             logger.exception("Failed to show desktop popup")
 
 
+def show_alert_popup(title: str, body: str):
+    """Always-on-top alert (e.g. printing offline). Never raises."""
+    global _popup_queue
+    try:
+        if _popup_queue is None:
+            import queue
+            import threading
+            _popup_queue = queue.Queue()
+            threading.Thread(target=_popup_worker, args=(_popup_queue,), daemon=True).start()
+        _popup_queue.put((title, body))
+    except Exception:
+        logger.exception("Could not queue alert popup")
+
+
 def show_order_popup(order: dict, currency: str):
     """Always-on-top 'new order' window. Never blocks or breaks printing."""
     global _popup_queue
@@ -341,11 +355,32 @@ def poll_loop(server_url: str, token: str, connection_type: str, printer_target:
         server_url, interval, connection_type, printer_target,
         f" (plus extra printers: {', '.join(extra_printer_ips)})" if extra_printer_ips else "",
     )
+    failures = 0
+    offline_since = None
+    last_alert = 0.0
     while True:
         try:
             run_once(server_url, token, connection_type, printer_target, store_name, currency, extra_printer_ips)
-        except requests.RequestException:
-            logger.exception("Failed to reach server - will retry next poll")
+            if failures >= 5:
+                logger.info("Connection to server restored")
+                show_alert_popup("PRINTING BACK ONLINE", "Connection restored. Any waiting orders are printing now.")
+            failures = 0
+            offline_since = None
+        except requests.RequestException as e:
+            failures += 1
+            logger.warning("Cannot reach server (%s) - attempt %d, will retry", type(e).__name__, failures)
+            if failures >= 5:
+                now = time.time()
+                offline_since = offline_since or now
+                if now - last_alert >= 300:
+                    last_alert = now
+                    mins = int((now - offline_since) // 60)
+                    show_alert_popup(
+                        "PRINTING OFFLINE",
+                        "Cannot reach the server - new orders will NOT print.\n"
+                        "Check this PC's internet/WiFi.\n"
+                        "New orders still appear on the dashboard." + (f"\nOffline for about {mins} min." if mins else ""),
+                    )
         except Exception:
             logger.exception("Unexpected error in poll loop - will retry next poll")
         time.sleep(interval)
