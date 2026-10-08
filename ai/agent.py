@@ -137,6 +137,7 @@ the order is confirmed, as part of the delivery follow-up). If the menu context 
 they ask for "Pista ice cream" but only \
 "Mixed Ice Cream" is listed), mention that real option too so they can choose it instead if they'd rather have an \
 exact price now - but still add their original request if they want it anyway.
+- PRICES ARE ALWAYS IN THE MENU CONTEXT: it lists the entire menu with real prices, so you always know every item's price. If what the customer names matches or closely resembles ANY listed item (different wording, extra words, small typos - e.g. "Zinger Chicken Club Sandwich" is the listed "Zinger Club"), it IS that item: add it with ITEMS: ADD using its [id:N] and state its real price. NEVER say a listed item has no price, never say you can't verify a listed item, and never use ADDITEM or "price confirmed at delivery" for something that is on the menu. Use ADDITEM only for dishes truly absent from the whole menu. Never quote a price that belongs to a different item. If you notice you gave a wrong answer earlier, correct it in one short sentence using the menu context and carry on.
 - If a customer asks the price of a dish, state it clearly from the menu context, and add one brief, genuine \
 reason to order it (e.g. "it's one of our most popular biryanis") - never invent a claim not reasonably inferable \
 from the menu, and never be pushy about it.
@@ -144,7 +145,7 @@ from the menu, and never be pushy about it.
 and line total.
 - Check "Operating hours" below before moving toward checkout. If it says CLOSED, you can still discuss the menu \
 and build up their order, but tell them plainly (once, don't repeat every message) that we're currently closed and \
-state the hours - never present a final total or ask for CONFIRM while closed. If they're browsing while closed, \
+state the hours - while closed, still take the order as a PRE-ORDER (normal flow through CONFIRM, mention once it will be prepared when we open). If they're browsing while closed, \
 let them know their order will be saved and they can confirm once we reopen.
 - Once the customer seems finished ordering (e.g. "that's it", "checkout", "done"), ask whether this is for \
 DELIVERY, PICKUP (takeaway), or DINE-IN if not already stated.
@@ -285,7 +286,7 @@ that they want to switch to pickup or dine-in - ask them to type the correct del
 change the order type or move toward a final total/confirmation until a correct address is given. \
 Never interpret a plain "No" in response to an address question as a request to skip delivery.
 
-Menu context (items relevant to this conversation):
+Menu context (the FULL menu - every item and its real price; items most relevant to this conversation are listed first):
 {catalog_context}
 
 Clarification hints for items shown above:
@@ -444,6 +445,20 @@ def is_accepting_orders() -> bool:
     return open_minutes <= now_minutes < cutoff_minutes
 
 
+def is_restaurant_open() -> bool:
+    """Within opening hours, ignoring the last-order cutoff - used to hold
+    printing of pre-orders (confirmed while closed) until the kitchen opens."""
+    now = _now_local()
+    open_m = config.STORE_OPEN_HOUR * 60
+    close_m = config.STORE_CLOSE_HOUR * 60
+    if close_m <= open_m:
+        close_m += 24 * 60
+    now_m = now.hour * 60 + now.minute
+    if now_m < open_m and close_m > 24 * 60:
+        now_m += 24 * 60
+    return open_m <= now_m < close_m
+
+
 def operating_hours_label() -> str:
     """Human-readable hours string for customer-facing messages, e.g.
     "8:00 AM - 2:00 AM (last orders 1:30 AM)"."""
@@ -470,8 +485,8 @@ def _format_operating_hours_context() -> str:
         return f"Open now, accepting orders. Hours: {operating_hours_label()}."
     return (
         f"CLOSED right now (outside operating hours). Hours: {operating_hours_label()}. "
-        "Do not accept or confirm any order right now - tell the customer we're closed and when we reopen, "
-        "but you can still answer menu questions."
+        "PRE-ORDERS ARE WELCOME: take the order normally (items, delivery/pickup, address, final total, CONFIRM) - "
+        "just tell the customer once that we're closed now, it will be placed as a pre-order and prepared when we open."
     )
 
 
@@ -808,7 +823,7 @@ def _parse_cart_actions(raw_reply: str, allowed_items: dict) -> tuple[str, list,
     address_match = _ADDRESS_LINE_RE.search(raw_reply, match.end())
     if address_match:
         address_text = address_match.group(1).strip()
-        if address_text and address_text.lower() != "none":
+        if address_text and address_text.lower().strip(".!? ") not in ("none", "yes", "no", "ok", "okay", "confirm", "cancel"):
             address = address_text
 
     return _sanitize_reply_text(text), actions, note, address
@@ -1005,6 +1020,17 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         lowered = customer_message.strip().lower()
         if any(phrase in lowered for phrase in MENU_BROWSE_PHRASES):
             categories = catalog_store.list_categories()
+
+    if not categories:
+        # Always give the model the WHOLE menu with real prices (relevant
+        # items first). Search-only context kept missing real dishes (a
+        # one-word reply like "Normal" dropped the shawarma being ordered),
+        # which made the model add them as price-TBD or deny they had a
+        # price. The full menu is only a few thousand tokens.
+        seen_full = {it["id"] for it in catalog_items}
+        catalog_items = list(catalog_items) + [
+            it for it in catalog_store.list_items() if it["id"] not in seen_full
+        ]
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         store_name=config.STORE_NAME,

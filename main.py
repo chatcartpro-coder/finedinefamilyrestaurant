@@ -36,6 +36,7 @@ logger = logging.getLogger("finedine-agent")
 # to detect when the AI is telling the customer to confirm, so the backend
 # can arm awaiting_confirmation to match (see the hard guard there for why
 # this is necessary, not just a prompt-following assumption).
+_NOT_AN_ADDRESS = {"yes", "no", "ok", "okay", "confirm", "cancel", "yep", "yeah", "sure", "wrong", "hi", "hello", "thanks", "thank you"}
 REPLY_CONFIRM_RE = re.compile(r"\breply\s+confirm\b", re.IGNORECASE)
 
 app = FastAPI(title=f"{config.STORE_NAME} WhatsApp AI Agent")
@@ -287,6 +288,11 @@ def _apply_delivery_address_label(phone: str, order: dict, address_text: str):
     coordinates already saved (see storage.store.set_order_delivery_address_label).
     This is what actually unblocks needs_delivery_address and moves the
     order to awaiting_confirmation - a pin by itself never does."""
+    if address_text.strip().lower().strip(".!? ") in _NOT_AN_ADDRESS:
+        # "Yes"/"ok" is an answer, not a door number - confirmed live it was
+        # saved as the delivery address ("Deliver to: Yes" on the receipt).
+        _send(phone, "Please type your building name and door/apartment number so the rider can find you.")
+        return
     customer = store.get_customer(phone)
     order_items = store.get_order_items(order["id"])
     reply, actions, note, clean_address = generate_reply(
@@ -516,13 +522,9 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
         intent = detect_confirmation_intent(text)
         if intent == "confirm":
             if not is_accepting_orders():
-                _send(
-                    phone,
-                    f"Sorry, {config.STORE_NAME} isn't accepting orders right now - we're open "
-                    f"{operating_hours_label()}. Your order is saved; just reply CONFIRM once we're open "
-                    "and I'll place it for you!",
-                )
-                return
+                # Pre-order: accepted while closed, held from printing until
+                # the kitchen opens (see print_agent/routes.py).
+                store.add_order_note(order["id"], "PRE-ORDER - placed while closed, prepare after opening")
             # Hard guard, not just a prompt instruction: a delivery order
             # must have a door/unit number (delivery_address_text) before it
             # can actually be confirmed - confirmed live that an order could
@@ -947,6 +949,8 @@ def _format_whatsapp_receipt(order: dict, items: list) -> str:
                 lines.append(f"- {note}")
 
     lines.append("")
+    if "PRE-ORDER" in (order.get("notes") or ""):
+        lines.append(f"This is a pre-order - we'll prepare it when we open ({operating_hours_label()}).")
     lines.append(f"Thank you for ordering from {config.STORE_NAME}!")
     lines.append(f"For delivery follow-up, call {config.STORE_PHONE or '+97142847471'}")
     return "\n".join(lines)

@@ -43,6 +43,9 @@ def _to_local_iso(value: str) -> str:
 
 @router.get("/orders/pending")
 def pending_orders(_=Depends(require_print_agent_token)):
+    from ai.agent import is_restaurant_open
+    if not is_restaurant_open():
+        return {"orders": []}  # hold pre-orders until the kitchen opens
     orders = store.get_unprinted_confirmed_orders()
     return {"orders": [_serialize_order(o) for o in orders]}
 
