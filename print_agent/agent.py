@@ -275,7 +275,23 @@ def _popup_worker(q):
             tk.Button(root, text="OK", font=("Segoe UI", 14, "bold"), width=14, command=root.destroy).pack(pady=16)
             root.lift()
             root.focus_force()
+            # Repeating beep (louder/longer for offline alerts) until OK is clicked.
+            import threading
+            stop_beep = threading.Event()
+
+            def _beep_loop():
+                try:
+                    import winsound
+                    while not stop_beep.is_set():
+                        winsound.Beep(1200, 350)
+                        winsound.Beep(900, 350)
+                        stop_beep.wait(1.5)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_beep_loop, daemon=True).start()
             root.mainloop()
+            stop_beep.set()
         except Exception:
             logger.exception("Failed to show desktop popup")
 
