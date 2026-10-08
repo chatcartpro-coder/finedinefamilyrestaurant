@@ -976,6 +976,19 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         # against, so the item never became a real ADD and the same NOTE:
         # got re-emitted turn after turn instead. Keep a still-unresolved
         # order note's item in context until it's actually resolved.
+        # Keep dishes from the last few messages (both sides) in context too.
+        # Confirmed live: customer ordered "FDR Shawarma" (real, AED 7), the
+        # bot asked "spicy or normal?", and the reply "Normal" matched only
+        # "Normal Lassi" - the shawarma dropped out of the menu context, so
+        # it was added as price-TBD and the bot later claimed it had no price.
+        seen_hist = {it["id"] for it in catalog_items}
+        for _d, _t in [h for h in (history or []) if h[0] == "in"][-4:]:
+            if _t == customer_message or _t.startswith("["):
+                continue
+            for extra in search_catalog_for_message(_t, top_k=6):
+                if extra["id"] not in seen_hist:
+                    seen_hist.add(extra["id"])
+                    catalog_items.append(extra)
         if order and order.get("notes"):
             seen_ids = {it["id"] for it in catalog_items}
             for note_part in order["notes"].split("; "):
