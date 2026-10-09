@@ -156,6 +156,85 @@ def _init_schema(conn):
         connected_at TEXT,
         updated_at TEXT
     );
+
+    -- Per-call AI (OpenRouter) usage log, for the Billing page's cost
+    -- tracking - one row per chat_completion() call, logged by
+    -- storage.store.log_ai_usage (see ai/openrouter_client.py's
+    -- ChatCompletionResult, which carries the real token counts and the
+    -- model slug that actually answered after any fallback chain).
+    -- estimated_cost is computed once at insert time from ai_model_prices
+    -- (below) so historical rows don't silently change if an admin edits
+    -- the price table later.
+    CREATE TABLE IF NOT EXISTS ai_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT,
+        purpose TEXT,             -- 'chat' | 'vision' | 'offer_draft'
+        model TEXT,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        estimated_cost REAL,
+        phone TEXT
+    );
+
+    -- Admin-configurable price per 1K tokens, per model - rows are lazily
+    -- created (price 0) the first time a model is actually used, so the
+    -- Billing page's pricing table only ever shows models seen in practice.
+    CREATE TABLE IF NOT EXISTS ai_model_prices (
+        model TEXT PRIMARY KEY,
+        price_per_1k_prompt_tokens REAL NOT NULL DEFAULT 0,
+        price_per_1k_completion_tokens REAL NOT NULL DEFAULT 0,
+        updated_at TEXT
+    );
+
+    -- Per-conversation Meta/WhatsApp cost, captured from the webhook's
+    -- "statuses" event (value.statuses[].pricing/conversation) - see
+    -- main.py's _process_message_statuses. Meta typically reports only
+    -- billable/category/pricing_model here, not a dollar amount (billing
+    -- happens on Meta's side at the account level), so estimated_cost is
+    -- computed from the admin-configured meta_category_prices rate table;
+    -- meta_reported_cost/currency are kept as a forward-compat hook in
+    -- case a future payload shape does include a direct amount.
+    CREATE TABLE IF NOT EXISTS meta_conversation_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT,
+        phone TEXT,
+        conversation_id TEXT,
+        category TEXT,
+        billable INTEGER,
+        pricing_model TEXT,
+        meta_reported_cost REAL,
+        meta_reported_currency TEXT,
+        estimated_cost REAL,
+        estimated_currency TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_meta_conversation_usage_conv_id
+        ON meta_conversation_usage(conversation_id);
+
+    -- Admin-configurable price per conversation, per Meta pricing category
+    -- (e.g. 'service', 'utility', 'marketing', 'authentication') - rows are
+    -- lazily created (price 0) the first time that category is actually
+    -- seen on a statuses webhook.
+    CREATE TABLE IF NOT EXISTS meta_category_prices (
+        category TEXT PRIMARY KEY,
+        price_per_conversation REAL NOT NULL DEFAULT 0,
+        currency TEXT,
+        updated_at TEXT
+    );
+
+    -- Display-only subscription plan tiers shown on the Billing page - no
+    -- enforcement, no payment processing, just informational cards the
+    -- admin can edit.
+    CREATE TABLE IF NOT EXISTS plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        price_text TEXT,
+        features_text TEXT,       -- newline-separated bullet list
+        display_order INTEGER NOT NULL DEFAULT 0,
+        is_current INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+    );
     """)
     conn.commit()
 
@@ -1160,3 +1239,244 @@ def _date_where(start: str, end: str):
         params.append(f"{end}T23:59:59.999999")
     where = ("AND " + " AND ".join(clauses)) if clauses else ""
     return where, params
+
+
+# ---- AI (OpenRouter) usage/cost tracking - see ai/openrouter_client.py's
+# ChatCompletionResult and the 4 call sites in ai/agent.py + ai/offer_assistant.py ----
+
+def ensure_ai_model_price_row(model: str):
+    """Creates a zero-priced row for a model the first time it's actually
+    used, so the Billing page's pricing table only ever lists real models -
+    never overwrites an existing (possibly admin-edited) price."""
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO ai_model_prices (model, updated_at) VALUES (?, ?) ON CONFLICT(model) DO NOTHING",
+        (model, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_ai_model_prices():
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT model, price_per_1k_prompt_tokens, price_per_1k_completion_tokens, updated_at "
+        "FROM ai_model_prices ORDER BY model"
+    )
+    keys = ["model", "price_per_1k_prompt_tokens", "price_per_1k_completion_tokens", "updated_at"]
+    return [dict(zip(keys, row)) for row in cur.fetchall()]
+
+
+def upsert_ai_model_price(model: str, price_per_1k_prompt_tokens: float, price_per_1k_completion_tokens: float):
+    conn = _get_conn()
+    conn.execute("""
+        INSERT INTO ai_model_prices (model, price_per_1k_prompt_tokens, price_per_1k_completion_tokens, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(model) DO UPDATE SET
+            price_per_1k_prompt_tokens=excluded.price_per_1k_prompt_tokens,
+            price_per_1k_completion_tokens=excluded.price_per_1k_completion_tokens,
+            updated_at=excluded.updated_at
+    """, (model, price_per_1k_prompt_tokens, price_per_1k_completion_tokens, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
+def _compute_ai_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    ensure_ai_model_price_row(model)
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT price_per_1k_prompt_tokens, price_per_1k_completion_tokens FROM ai_model_prices WHERE model = ?",
+        (model,),
+    ).fetchone()
+    price_prompt, price_completion = row if row else (0, 0)
+    cost = (prompt_tokens or 0) / 1000 * price_prompt + (completion_tokens or 0) / 1000 * price_completion
+    return round(cost, 6)
+
+
+def log_ai_usage(purpose: str, model: str, prompt_tokens: int = None, completion_tokens: int = None,
+                  total_tokens: int = None, phone: str = None):
+    """Logs one chat_completion() call's real token usage and a cost
+    estimated from ai_model_prices at the time of this call - estimated_cost
+    is frozen at insert time so editing the price table later doesn't
+    silently rewrite historical totals."""
+    conn = _get_conn()
+    estimated_cost = _compute_ai_cost(model, prompt_tokens, completion_tokens) if model else None
+    conn.execute("""
+        INSERT INTO ai_usage (created_at, purpose, model, prompt_tokens, completion_tokens, total_tokens, estimated_cost, phone)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        datetime.now(timezone.utc).isoformat(), purpose, model,
+        prompt_tokens, completion_tokens, total_tokens, estimated_cost, phone,
+    ))
+    conn.commit()
+
+
+def get_ai_usage_stats(start: str = None, end: str = None):
+    conn = _get_conn()
+    where, params = _date_where(start, end)
+    total_cost = conn.execute(
+        f"SELECT COALESCE(SUM(estimated_cost), 0) FROM ai_usage WHERE 1=1 {where}", params
+    ).fetchone()[0]
+    total_calls = conn.execute(f"SELECT COUNT(*) FROM ai_usage WHERE 1=1 {where}", params).fetchone()[0]
+    cur = conn.execute(f"""
+        SELECT model,
+               COUNT(*) AS calls,
+               COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+               COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+               COALESCE(SUM(estimated_cost), 0) AS cost
+        FROM ai_usage
+        WHERE 1=1 {where}
+        GROUP BY model
+        ORDER BY cost DESC
+    """, params)
+    keys = ["model", "calls", "prompt_tokens", "completion_tokens", "cost"]
+    by_model = [dict(zip(keys, row)) for row in cur.fetchall()]
+    return {"total_cost": total_cost, "total_calls": total_calls, "by_model": by_model}
+
+
+# ---- Meta/WhatsApp conversation cost tracking - see main.py's
+# _process_message_statuses, fed by the webhook's "statuses" event ----
+
+def ensure_meta_category_price_row(category: str):
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO meta_category_prices (category, updated_at) VALUES (?, ?) ON CONFLICT(category) DO NOTHING",
+        (category, datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_meta_category_prices():
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT category, price_per_conversation, currency, updated_at FROM meta_category_prices ORDER BY category"
+    )
+    keys = ["category", "price_per_conversation", "currency", "updated_at"]
+    return [dict(zip(keys, row)) for row in cur.fetchall()]
+
+
+def upsert_meta_category_price(category: str, price_per_conversation: float, currency: str = None):
+    conn = _get_conn()
+    conn.execute("""
+        INSERT INTO meta_category_prices (category, price_per_conversation, currency, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(category) DO UPDATE SET
+            price_per_conversation=excluded.price_per_conversation,
+            currency=excluded.currency,
+            updated_at=excluded.updated_at
+    """, (category, price_per_conversation, currency, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
+def log_meta_conversation_usage(phone: str, conversation_id: str, category: str, billable: bool,
+                                 pricing_model: str = None, meta_reported_cost: float = None,
+                                 meta_reported_currency: str = None):
+    """Logs one WhatsApp conversation's pricing info from the webhook's
+    statuses event. Deduplicates by conversation_id - Meta can send several
+    status updates referencing the same conversation, so this keeps only
+    the latest row for a given conversation_id rather than double-counting
+    cost on every status update within it."""
+    conn = _get_conn()
+    if conversation_id:
+        conn.execute("DELETE FROM meta_conversation_usage WHERE conversation_id = ?", (conversation_id,))
+    estimated_cost = 0.0
+    estimated_currency = None
+    if billable and category:
+        ensure_meta_category_price_row(category)
+        row = conn.execute(
+            "SELECT price_per_conversation, currency FROM meta_category_prices WHERE category = ?", (category,)
+        ).fetchone()
+        if row:
+            estimated_cost, estimated_currency = row[0], row[1]
+    conn.execute("""
+        INSERT INTO meta_conversation_usage
+            (created_at, phone, conversation_id, category, billable, pricing_model,
+             meta_reported_cost, meta_reported_currency, estimated_cost, estimated_currency)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        datetime.now(timezone.utc).isoformat(), phone, conversation_id, category, int(bool(billable)),
+        pricing_model, meta_reported_cost, meta_reported_currency, estimated_cost, estimated_currency,
+    ))
+    conn.commit()
+
+
+def get_meta_usage_stats(start: str = None, end: str = None):
+    conn = _get_conn()
+    where, params = _date_where(start, end)
+    total_cost = conn.execute(
+        f"SELECT COALESCE(SUM(estimated_cost), 0) FROM meta_conversation_usage WHERE 1=1 {where}", params
+    ).fetchone()[0]
+    total_conversations = conn.execute(
+        f"SELECT COUNT(*) FROM meta_conversation_usage WHERE 1=1 {where}", params
+    ).fetchone()[0]
+    cur = conn.execute(f"""
+        SELECT category,
+               COUNT(*) AS conversations,
+               SUM(CASE WHEN billable THEN 1 ELSE 0 END) AS billable_conversations,
+               COALESCE(SUM(estimated_cost), 0) AS cost
+        FROM meta_conversation_usage
+        WHERE 1=1 {where}
+        GROUP BY category
+        ORDER BY cost DESC
+    """, params)
+    keys = ["category", "conversations", "billable_conversations", "cost"]
+    by_category = [dict(zip(keys, row)) for row in cur.fetchall()]
+    return {"total_cost": total_cost, "total_conversations": total_conversations, "by_category": by_category}
+
+
+# ---- Display-only subscription plan tiers (Billing page) ----
+
+def list_plans():
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT id, name, price_text, features_text, display_order, is_current FROM plans ORDER BY display_order, id"
+    )
+    keys = ["id", "name", "price_text", "features_text", "display_order", "is_current"]
+    return [dict(zip(keys, row)) for row in cur.fetchall()]
+
+
+def get_plan(plan_id: int):
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT id, name, price_text, features_text, display_order, is_current FROM plans WHERE id = ?", (plan_id,)
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    keys = ["id", "name", "price_text", "features_text", "display_order", "is_current"]
+    return dict(zip(keys, row))
+
+
+def create_plan(name: str, price_text: str, features_text: str, display_order: int = 0):
+    conn = _get_conn()
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "INSERT INTO plans (name, price_text, features_text, display_order, is_current, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 0, ?, ?)",
+        (name, price_text, features_text, display_order, now, now),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_plan(plan_id: int, name: str, price_text: str, features_text: str, display_order: int = 0):
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE plans SET name=?, price_text=?, features_text=?, display_order=?, updated_at=? WHERE id=?",
+        (name, price_text, features_text, display_order, datetime.now(timezone.utc).isoformat(), plan_id),
+    )
+    conn.commit()
+
+
+def delete_plan(plan_id: int):
+    conn = _get_conn()
+    conn.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+    conn.commit()
+
+
+def set_current_plan(plan_id: int):
+    """Only one plan is marked current at a time - clears the flag on every
+    other row first."""
+    conn = _get_conn()
+    conn.execute("UPDATE plans SET is_current = 0")
+    conn.execute("UPDATE plans SET is_current = 1, updated_at = ? WHERE id = ?",
+                 (datetime.now(timezone.utc).isoformat(), plan_id))
+    conn.commit()

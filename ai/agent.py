@@ -25,6 +25,7 @@ from ai.openrouter_client import chat_completion
 from ai.ordering_knowledge import get_clarification_hints
 from catalog import store as catalog_store
 from offers import store as offers_store
+from storage import store
 
 logger = logging.getLogger("finedine-agent")
 
@@ -1058,7 +1059,13 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
     # ("Here", a bare bullet "-", "If delivery, we can send it to") even on
     # the paid primary model, likely because some models spend part of
     # their token budget on an internal step before visible output starts.
-    raw_reply = chat_completion(messages)
+    result = chat_completion(messages)
+    raw_reply = result.text
+    store.log_ai_usage(
+        purpose="chat", model=result.model, prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens, total_tokens=result.total_tokens,
+        phone=customer.get("phone") if customer else None,
+    )
     # Also allow removing an item already in the cart even if this turn's
     # catalog search didn't happen to re-surface it (e.g. "remove the
     # appam" after the conversation moved on to other dishes).
@@ -1152,10 +1159,15 @@ def _guess_dish_name_from_image(image_bytes: bytes, mime_type: str, caption: str
             {"type": "text", "text": caption.strip() or "What dish is this?"},
         ]},
     ]
-    return chat_completion(
+    result = chat_completion(
         messages, model=config.OPENROUTER_VISION_MODEL, temperature=0.1, max_tokens=20,
         fallback_models=config.OPENROUTER_VISION_FALLBACK_MODELS,
     )
+    store.log_ai_usage(
+        purpose="vision", model=result.model, prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens, total_tokens=result.total_tokens,
+    )
+    return result.text
 
 
 def generate_image_reply(image_bytes: bytes, mime_type: str, caption: str = "") -> str:
@@ -1201,10 +1213,15 @@ def generate_image_reply(image_bytes: bytes, mime_type: str, caption: str = "") 
         {"role": "user", "content": user_content},
     ]
 
-    return chat_completion(
+    result = chat_completion(
         messages, model=config.OPENROUTER_VISION_MODEL,
         fallback_models=config.OPENROUTER_VISION_FALLBACK_MODELS,
     )
+    store.log_ai_usage(
+        purpose="vision", model=result.model, prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens, total_tokens=result.total_tokens,
+    )
+    return result.text
 
 
 def compute_delivery_fee(subtotal: float) -> float:

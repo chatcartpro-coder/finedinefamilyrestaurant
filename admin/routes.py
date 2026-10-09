@@ -632,15 +632,25 @@ def delivery_agents_deactivate(agent_id: int, admin=Depends(get_current_admin)):
 
 # ---- Billing ----
 
+def _billing_context(admin, message=None, error=None):
+    today = date.today()
+    start, end = today.replace(day=1).isoformat(), today.isoformat()
+    return dict(
+        active_page="billing", admin=admin,
+        stats_month=store.get_stats(start, end),
+        ai_usage_month=store.get_ai_usage_stats(start, end),
+        meta_usage_month=store.get_meta_usage_stats(start, end),
+        ai_model_prices=store.get_ai_model_prices(),
+        meta_category_prices=store.get_meta_category_prices(),
+        billing_settings=store.get_billing_settings(),
+        plans=store.list_plans(),
+        message=message, error=error,
+    )
+
+
 @router.get("/billing", response_class=HTMLResponse)
 def billing_page(request: Request, admin=Depends(get_current_admin)):
-    today = date.today()
-    stats_month = store.get_stats(today.replace(day=1).isoformat(), today.isoformat())
-    billing_settings = store.get_billing_settings()
-    return render(
-        request, "billing.html", active_page="billing", admin=admin,
-        stats_month=stats_month, billing_settings=billing_settings, message=None, error=None,
-    )
+    return render(request, "billing.html", **_billing_context(admin))
 
 
 @router.post("/billing/connector")
@@ -653,12 +663,61 @@ def billing_connector_save(
         api_base_url=api_base_url.strip() or None,
         api_key=api_key.strip() or None,
     )
-    today = date.today()
-    return render(
-        request, "billing.html", active_page="billing", admin=admin,
-        stats_month=store.get_stats(today.replace(day=1).isoformat(), today.isoformat()),
-        billing_settings=store.get_billing_settings(), message="Billing connector settings saved.", error=None,
-    )
+    return render(request, "billing.html", **_billing_context(admin, message="Billing connector settings saved."))
+
+
+@router.post("/billing/ai-prices")
+async def billing_ai_prices_save(request: Request, admin=Depends(get_current_admin)):
+    form = await request.form()
+    models = [m for m in form.getlist("model") if m]
+    for i, model in enumerate(models):
+        prompt_price = float(form.getlist("price_prompt")[i] or 0)
+        completion_price = float(form.getlist("price_completion")[i] or 0)
+        store.upsert_ai_model_price(model, prompt_price, completion_price)
+    return render(request, "billing.html", **_billing_context(admin, message="AI model pricing saved."))
+
+
+@router.post("/billing/meta-prices")
+async def billing_meta_prices_save(request: Request, admin=Depends(get_current_admin)):
+    form = await request.form()
+    categories = [c for c in form.getlist("category") if c]
+    for i, category in enumerate(categories):
+        price = float(form.getlist("price_conversation")[i] or 0)
+        currency = form.getlist("currency")[i] or config.CURRENCY
+        store.upsert_meta_category_price(category, price, currency)
+    return render(request, "billing.html", **_billing_context(admin, message="Meta conversation pricing saved."))
+
+
+@router.post("/billing/plans")
+def billing_plans_add(
+    request: Request, admin=Depends(get_current_admin),
+    name: str = Form(...), price_text: str = Form(""), features_text: str = Form(""),
+    display_order: int = Form(0),
+):
+    store.create_plan(name.strip(), price_text.strip(), features_text.strip(), display_order)
+    return render(request, "billing.html", **_billing_context(admin, message="Plan added."))
+
+
+@router.post("/billing/plans/{plan_id}/edit")
+def billing_plans_edit(
+    plan_id: int, request: Request, admin=Depends(get_current_admin),
+    name: str = Form(...), price_text: str = Form(""), features_text: str = Form(""),
+    display_order: int = Form(0),
+):
+    store.update_plan(plan_id, name.strip(), price_text.strip(), features_text.strip(), display_order)
+    return render(request, "billing.html", **_billing_context(admin, message="Plan updated."))
+
+
+@router.post("/billing/plans/{plan_id}/delete")
+def billing_plans_delete(plan_id: int, admin=Depends(get_current_admin)):
+    store.delete_plan(plan_id)
+    return render(request, "billing.html", **_billing_context(admin, message="Plan deleted."))
+
+
+@router.post("/billing/plans/{plan_id}/set-current")
+def billing_plans_set_current(plan_id: int, admin=Depends(get_current_admin)):
+    store.set_current_plan(plan_id)
+    return render(request, "billing.html", **_billing_context(admin, message="Current plan updated."))
 
 
 # ---- Printer ----

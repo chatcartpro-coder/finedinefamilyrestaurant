@@ -8,30 +8,81 @@
   </div>
 </div>
 
-<div class="grid-2">
-  <div class="panel">
-    <h2>Current plan</h2>
-    <div class="stat-card dark" style="margin-bottom:16px;">
-      <div class="top">Plan</div>
-      <div class="value">Free</div>
-      <div class="delta">No charges - this WhatsApp AI agent is currently free to run.</div>
-    </div>
-    <p class="muted">Included: 1 WhatsApp number, unlimited catalog items, order capture, customer conversations, sales analytics, and this admin dashboard.</p>
-    <button class="btn btn-primary" disabled>Upgrade (coming soon)</button>
-  </div>
+{% if message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg); margin-bottom:16px;">{{ message }}</div>{% endif %}
+{% if error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg); margin-bottom:16px;">{{ error }}</div>{% endif %}
 
+<div class="panel" style="margin-bottom:16px;">
+  <h2>Plans</h2>
+  <div class="grid-2" style="margin-bottom:16px;">
+    {% for p in plans %}
+    <div class="panel"{% if p.is_current %} style="border:2px solid var(--green-fg);"{% endif %}>
+      <h3>{{ p.name }}{% if p.is_current %} <span class="badge badge-green">Current</span>{% endif %}</h3>
+      <p><b>{{ p.price_text or "-" }}</b></p>
+      {% if p.features_text %}
+      <ul class="muted" style="margin:8px 0 0; padding-left:20px;">
+        {% for f in p.features_text.split('\n') %}{% if f.strip() %}<li>{{ f.strip() }}</li>{% endif %}{% endfor %}
+      </ul>
+      {% endif %}
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        {% if not p.is_current %}
+        <form method="post" action="/admin/billing/plans/{{ p.id }}/set-current"><button class="btn btn-outline" type="submit">Set current</button></form>
+        {% endif %}
+        <form method="post" action="/admin/billing/plans/{{ p.id }}/delete"><button class="btn btn-outline" type="submit">Delete</button></form>
+      </div>
+    </div>
+    {% else %}
+    <p class="muted">No plans added yet.</p>
+    {% endfor %}
+  </div>
+  <details>
+    <summary class="muted" style="cursor:pointer;">Add a plan</summary>
+    <form method="post" action="/admin/billing/plans" class="form-grid" style="margin-top:12px;">
+      <label>Name<input type="text" name="name" required></label>
+      <label>Price text<input type="text" name="price_text" placeholder="AED 99/mo"></label>
+      <label class="full">Features (one per line)<textarea name="features_text" rows="3"></textarea></label>
+      <label>Display order<input type="number" name="display_order" value="0"></label>
+      <div class="full"><button class="btn btn-primary" type="submit">Add plan</button></div>
+    </form>
+  </details>
+</div>
+
+<div class="grid-2" style="margin-bottom:16px;">
   <div class="panel">
     <h2>Usage this month</h2>
     <table>
       <tr><th>Metric</th><th>Value</th></tr>
       <tr><td>Messages received</td><td>{{ stats_month.messages_received if stats_month else "-" }}</td></tr>
       <tr><td>Orders confirmed</td><td>{{ stats_month.orders_confirmed if stats_month else "-" }}</td></tr>
+      <tr><td>AI (OpenRouter) cost</td><td>{{ "%.4f"|format(ai_usage_month.total_cost) }} ({{ ai_usage_month.total_calls }} calls)</td></tr>
+      <tr><td>Meta (WhatsApp) cost</td><td>{{ "%.2f"|format(meta_usage_month.total_cost) }} ({{ meta_usage_month.total_conversations }} conversations)</td></tr>
+    </table>
+    <p class="muted" style="margin-top:8px;">Voice transcription cost not yet tracked.</p>
+  </div>
+
+  <div class="panel">
+    <h2>AI cost by model</h2>
+    <table>
+      <tr><th>Model</th><th>Calls</th><th>Tokens (in/out)</th><th>Cost</th></tr>
+      {% for m in ai_usage_month.by_model %}
+      <tr><td>{{ m.model }}</td><td>{{ m.calls }}</td><td>{{ m.prompt_tokens }}/{{ m.completion_tokens }}</td><td>{{ "%.4f"|format(m.cost) }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">No AI calls logged yet this month</td></tr>
+      {% endfor %}
     </table>
   </div>
 </div>
 
-{% if message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg); margin-top:16px;">{{ message }}</div>{% endif %}
-{% if error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg); margin-top:16px;">{{ error }}</div>{% endif %}
+<div class="panel" style="margin-bottom:16px;">
+  <h2>Meta cost by category</h2>
+  <table>
+    <tr><th>Category</th><th>Conversations</th><th>Billable</th><th>Cost</th></tr>
+    {% for c in meta_usage_month.by_category %}
+    <tr><td>{{ c.category }}</td><td>{{ c.conversations }}</td><td>{{ c.billable_conversations }}</td><td>{{ "%.2f"|format(c.cost) }}</td></tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No conversation pricing data yet this month</td></tr>
+    {% endfor %}
+  </table>
+</div>
 
 <div class="panel" style="margin-top:16px;">
   <h2>Billing software connector</h2>
@@ -49,6 +100,46 @@
   {% if billing_settings and billing_settings.updated_at %}
   <p class="muted" style="margin-top:12px;">Last updated: {{ billing_settings.updated_at|local_time }}</p>
   {% endif %}
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <h2>AI model pricing</h2>
+  <p class="muted">Price per 1,000 tokens for each model that has answered a customer so far - used to estimate the AI cost above. Many fallback models are free (0.00).</p>
+  <form method="post" action="/admin/billing/ai-prices">
+    <table>
+      <tr><th>Model</th><th>Price / 1K prompt tokens</th><th>Price / 1K completion tokens</th></tr>
+      {% for m in ai_model_prices %}
+      <tr>
+        <td>{{ m.model }}<input type="hidden" name="model" value="{{ m.model }}"></td>
+        <td><input type="number" step="0.000001" name="price_prompt" value="{{ m.price_per_1k_prompt_tokens }}" style="width:120px;"></td>
+        <td><input type="number" step="0.000001" name="price_completion" value="{{ m.price_per_1k_completion_tokens }}" style="width:120px;"></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="muted">No models used yet - rows appear automatically once the AI answers a customer.</td></tr>
+      {% endfor %}
+    </table>
+    {% if ai_model_prices %}<button class="btn btn-primary" type="submit" style="margin-top:12px;">Save AI pricing</button>{% endif %}
+  </form>
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <h2>Meta conversation pricing</h2>
+  <p class="muted">Price per conversation for each WhatsApp pricing category Meta has billed so far - used to estimate the Meta cost above. Rates vary by country; use a past Meta invoice to work out the right value per category.</p>
+  <form method="post" action="/admin/billing/meta-prices">
+    <table>
+      <tr><th>Category</th><th>Price / conversation</th><th>Currency</th></tr>
+      {% for c in meta_category_prices %}
+      <tr>
+        <td>{{ c.category }}<input type="hidden" name="category" value="{{ c.category }}"></td>
+        <td><input type="number" step="0.01" name="price_conversation" value="{{ c.price_per_conversation }}" style="width:120px;"></td>
+        <td><input type="text" name="currency" value="{{ c.currency or '' }}" style="width:80px;"></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="muted">No categories seen yet - rows appear automatically once Meta sends a billable status update.</td></tr>
+      {% endfor %}
+    </table>
+    {% if meta_category_prices %}<button class="btn btn-primary" type="submit" style="margin-top:12px;">Save Meta pricing</button>{% endif %}
+  </form>
 </div>
 
 {% endblock %}

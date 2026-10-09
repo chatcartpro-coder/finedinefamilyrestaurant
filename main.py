@@ -160,6 +160,20 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks):
                 background_tasks.add_task(_process_message_echo, echo)
             return {"status": "accepted"}
 
+        # Message status updates ("sent"/"delivered"/"read") - Meta attaches
+        # a "pricing" object (category/billable/pricing_model) to these,
+        # which is the real source of WhatsApp conversation cost (see the
+        # Billing page). Confirmed live via a captured payload:
+        # {'status': 'read', 'recipient_id': '...', 'pricing':
+        #  {'billable': False, 'pricing_model': 'PMP', 'category': 'service',
+        #   'type': 'free_customer_service'}} - no top-level "messages" key,
+        # so this must be checked before the "messages" fallthrough below or
+        # every status update would silently hit {"status": "ignored"}.
+        if "statuses" in value:
+            for status in value["statuses"]:
+                background_tasks.add_task(_process_message_status, status)
+            return {"status": "accepted"}
+
         if "messages" not in value:
             return {"status": "ignored"}
 
@@ -506,6 +520,39 @@ def _process_message_echo(echo: dict):
     text = text or f"[{echo.get('type', 'message')} sent from WhatsApp Business app]"
     store.upsert_customer(customer_phone)
     store.log_message(customer_phone, "out", text)
+
+
+def _process_message_status(status: dict):
+    """One entry from the webhook's "statuses" event - Meta's real source of
+    WhatsApp conversation cost (see the Billing page). Only entries with a
+    "pricing" object carry cost info; most sent/delivered/read updates
+    don't and are skipped. Meta's Cloud API pricing object typically only
+    reports category/billable/pricing_model, not a dollar amount (billing
+    happens on Meta's side at the account/WABA level), so the actual cost
+    estimate comes from the admin-configured meta_category_prices rate
+    table (storage.store.log_meta_conversation_usage) rather than anything
+    Meta sends directly. Wrapped in try/except by the caller via
+    BackgroundTasks' own error handling never reaching here - each status
+    is processed independently so one malformed entry can't affect others
+    in the same webhook delivery."""
+    try:
+        pricing = status.get("pricing") or {}
+        if not pricing:
+            return  # a plain delivery-status update with no cost info - nothing to log
+        phone = status.get("recipient_id")
+        conversation = status.get("conversation") or {}
+        conversation_id = conversation.get("id")
+        category = pricing.get("category") or (conversation.get("origin") or {}).get("type")
+        billable = bool(pricing.get("billable"))
+        pricing_model = pricing.get("pricing_model")
+        if not conversation_id and not category:
+            return  # nothing identifiable to log or price
+        store.log_meta_conversation_usage(
+            phone=phone, conversation_id=conversation_id, category=category, billable=billable,
+            pricing_model=pricing_model,
+        )
+    except Exception:
+        logger.exception("Failed to process message status (non-fatal): %s", status)
 
 
 # ---- Customer-facing order flow ----

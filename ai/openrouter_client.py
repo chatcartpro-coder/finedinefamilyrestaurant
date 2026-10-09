@@ -3,6 +3,7 @@ Thin client for OpenRouter's chat completions endpoint (OpenAI-compatible).
 Docs: https://openrouter.ai/docs
 """
 import logging
+from dataclasses import dataclass
 
 import requests
 
@@ -13,6 +14,20 @@ logger = logging.getLogger("finedine-agent")
 
 class OpenRouterError(Exception):
     pass
+
+
+@dataclass
+class ChatCompletionResult:
+    """Return type of chat_completion() - carries the reply text plus which
+    model actually answered (after any fallback chain) and its real token
+    usage, so callers can log cost (see storage.store.log_ai_usage) without
+    a second round-trip. token fields are None if a provider's response
+    omitted usage data (not all do) - never guessed."""
+    text: str
+    model: str
+    prompt_tokens: int = None
+    completion_tokens: int = None
+    total_tokens: int = None
 
 
 # Failures worth retrying on the next model in the fallback chain: rate
@@ -31,7 +46,10 @@ _RETRYABLE_STATUS_CODES = {404, 429, 500, 502, 503, 504}
 _RETRYABLE_400_MARKERS = ("not a valid model id", "model not found")
 
 
-def _call_model(messages, model: str, temperature: float, max_tokens: int) -> str:
+def _call_model(messages, model: str, temperature: float, max_tokens: int) -> tuple:
+    """Returns (content, usage) - usage is OpenRouter's raw "usage" dict
+    (prompt_tokens/completion_tokens/total_tokens) when the response
+    includes one, else {} (not all providers return it)."""
     """Raises OpenRouterError on any failure - callers decide whether that's
     retryable (see _RETRYABLE_STATUS_CODES) or should propagate immediately."""
     try:
@@ -107,11 +125,11 @@ def _call_model(messages, model: str, temperature: float, max_tokens: int) -> st
     if not content or not content.strip():
         raise OpenRouterError(f"OpenRouter model '{model}' returned empty content (choices[0].message.content was null/blank)")
 
-    return content.strip()
+    return content.strip(), (data.get("usage") or {})
 
 
 def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 1000, model: str = None,
-                     fallback_models: list = None) -> str:
+                     fallback_models: list = None) -> ChatCompletionResult:
     """Tries `model` (or config.OPENROUTER_MODEL) first, then falls through
     `fallback_models` (or config.OPENROUTER_FALLBACK_MODELS when no explicit
     model= override is given) in order on a retryable failure (rate limit,
@@ -129,7 +147,11 @@ def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 1000, 
     caller can pass its own fallback_models (e.g. ai/agent.py passing
     config.OPENROUTER_VISION_FALLBACK_MODELS) to get the same resilience
     for a non-default model; omitting it preserves the old no-fallback
-    behavior for callers that genuinely want only one exact model tried."""
+    behavior for callers that genuinely want only one exact model tried.
+
+    Returns a ChatCompletionResult (text + which model answered + real
+    token usage from OpenRouter, for cost tracking - see storage.store.
+    log_ai_usage) rather than a plain string."""
     if not config.OPENROUTER_API_KEY:
         raise OpenRouterError("OPENROUTER_API_KEY is not set in .env")
 
@@ -145,7 +167,14 @@ def chat_completion(messages, temperature: float = 0.3, max_tokens: int = 1000, 
     last_error = None
     for i, candidate in enumerate(candidates):
         try:
-            return _call_model(messages, candidate, temperature, max_tokens)
+            content, usage = _call_model(messages, candidate, temperature, max_tokens)
+            return ChatCompletionResult(
+                text=content,
+                model=candidate,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
         except OpenRouterError as e:
             last_error = e
             is_last = i == len(candidates) - 1

@@ -8,6 +8,7 @@ import json
 from datetime import date
 
 from ai.openrouter_client import chat_completion
+from storage import store
 
 SYSTEM_PROMPT = """You convert a restaurant admin's plain-language promotion request into a structured offer.
 Return ONLY a JSON object (no markdown fences, no extra text) with exactly these fields:
@@ -43,7 +44,12 @@ def draft_offer(admin_prompt: str) -> dict:
         {"role": "user", "content": admin_prompt},
     ]
 
-    raw = chat_completion(messages, temperature=0.2, max_tokens=400)
+    result = chat_completion(messages, temperature=0.2, max_tokens=400)
+    store.log_ai_usage(
+        purpose="offer_draft", model=result.model, prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens, total_tokens=result.total_tokens,
+    )
+    raw = result.text
 
     # Models sometimes wrap JSON in markdown fences despite instructions - strip if present.
     cleaned = raw.strip()
