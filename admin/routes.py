@@ -761,6 +761,50 @@ def printer_save(
     )
 
 
+# ---- Customer retargeting broadcasts ----
+
+@router.get("/retargeting", response_class=HTMLResponse)
+def retargeting_page(request: Request, admin=Depends(get_current_admin)):
+    from whatsapp.templates import WhatsAppTemplateError, list_templates
+    approved_templates, tmpl_error = [], None
+    try:
+        approved_templates = [t for t in list_templates() if t.get("status") == "APPROVED"]
+    except WhatsAppTemplateError as e:
+        tmpl_error = str(e)
+    return render(
+        request, "retargeting.html", active_page="retargeting", admin=admin,
+        settings=store.get_retargeting_campaign_settings(),
+        approved_templates=approved_templates, tmpl_error=tmpl_error,
+        history=store.get_broadcast_log(campaign="retargeting", limit=100),
+        message=None, error=None,
+    )
+
+
+@router.post("/retargeting")
+def retargeting_save(
+    request: Request, admin=Depends(get_current_admin),
+    enabled: str = Form(""), template_name: str = Form(...), language: str = Form("en_US"),
+    days_inactive: int = Form(14), cooldown_days: int = Form(21), dry_run: str = Form(""),
+):
+    store.set_retargeting_campaign_settings(
+        enabled=bool(enabled), template_name=template_name.strip(), language=language.strip(),
+        days_inactive=days_inactive, cooldown_days=cooldown_days, dry_run=bool(dry_run),
+    )
+    from whatsapp.templates import WhatsAppTemplateError, list_templates
+    approved_templates, tmpl_error = [], None
+    try:
+        approved_templates = [t for t in list_templates() if t.get("status") == "APPROVED"]
+    except WhatsAppTemplateError as e:
+        tmpl_error = str(e)
+    return render(
+        request, "retargeting.html", active_page="retargeting", admin=admin,
+        settings=store.get_retargeting_campaign_settings(),
+        approved_templates=approved_templates, tmpl_error=tmpl_error,
+        history=store.get_broadcast_log(campaign="retargeting", limit=100),
+        message="Retargeting settings saved.", error=None,
+    )
+
+
 # ---- Settings ----
 
 @router.get("/settings", response_class=HTMLResponse)

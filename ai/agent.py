@@ -587,6 +587,27 @@ def detect_confirmation_intent(message: str) -> str | None:
     return None
 
 
+OPT_IN_YES_WORDS = {"yes", "y", "yeah", "yep", "sure", "ok", "okay"}
+OPT_IN_NO_WORDS = {"no", "n", "nope", "stop", "unsubscribe"}
+
+
+def detect_marketing_opt_in_reply(message: str) -> bool | None:
+    """Returns True/False/None (unrecognized). Deterministic, narrow
+    word-matching rather than AI-interpreted - same reasoning as
+    detect_confirmation_intent: this answer has a compliance consequence
+    (Meta requires explicit opt-in for MARKETING-category templates), so a
+    mis-parsed reply isn't just a UX miss, it's a consent risk. A
+    None-returning (unrecognized) reply must never be treated as an
+    answer - callers leave marketing_opt_in untouched (stays NULL, the
+    safe default) and let the message fall through to normal handling."""
+    lowered = message.strip().lower()
+    if any(word == lowered or lowered.startswith(word) for word in OPT_IN_YES_WORDS):
+        return True
+    if any(word == lowered or lowered.startswith(word) for word in OPT_IN_NO_WORDS):
+        return False
+    return None
+
+
 def detect_delivery_preference(message: str) -> str | None:
     """Returns 'delivery', 'pickup', 'dine_in', or None - used to detect the
     customer's answer to the delivery/pickup/dine-in question. Checked in

@@ -103,6 +103,14 @@ class Config:
     # module is present and ready the moment they get a printer.
     PRINT_AGENT_TOKEN = os.getenv("PRINT_AGENT_TOKEN", "")
 
+    # Shared secret the Render cron job (finedine-retargeting-broadcast)
+    # sends as a Bearer token to POST /internal/broadcast/run-retargeting -
+    # Render cron jobs can't access the same persistent disk/DB as the web
+    # service, so the cron job calls this endpoint instead of touching the
+    # database directly. Not an admin session cookie, since the caller is a
+    # machine, not a logged-in browser - same pattern as PRINT_AGENT_TOKEN.
+    BROADCAST_CRON_SECRET = os.getenv("BROADCAST_CRON_SECRET", "")
+
     # Billing/invoicing connector - optional, disabled until a vendor is wired
     # into billing/connector.py. Setting BILLING_API_BASE_URL is what turns
     # the best-effort push in main.py's _confirm_order() on; see that module's

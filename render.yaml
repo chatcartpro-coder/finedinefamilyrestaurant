@@ -44,6 +44,8 @@ services:
         generateValue: true
       - key: PRINT_AGENT_TOKEN
         generateValue: true
+      - key: BROADCAST_CRON_SECRET
+        generateValue: true
       - key: STORE_NAME
         value: Fine Dine Family Restaurant
       - key: STORE_PHONE
@@ -71,4 +73,27 @@ services:
       - key: BILLING_API_BASE_URL
         sync: false
       - key: BILLING_API_KEY
+        sync: false
+
+  # Daily trigger for the customer retargeting campaign (see
+  # broadcasts/retargeting.py). Render cron jobs can't attach a persistent
+  # disk (confirmed via Render's docs - disks are unavailable to cron
+  # services entirely, and never shared between two services), so this
+  # can't read the SQLite database directly the way the web service does.
+  # It just calls the web service's own /broadcast/run-retargeting
+  # endpoint, authenticated with the same BROADCAST_CRON_SECRET - all the
+  # real work (DB queries, sending) happens inside the already-running web
+  # service, which already has the disk and the WhatsApp credentials.
+  - type: cron
+    name: finedine-retargeting-broadcast
+    env: python
+    plan: starter
+    schedule: "0 6 * * *"
+    buildCommand: "true"
+    startCommand: >
+      curl -sf -X POST
+      -H "Authorization: Bearer $BROADCAST_CRON_SECRET"
+      https://finedine-whatsapp-agent.onrender.com/broadcast/run-retargeting
+    envVars:
+      - key: BROADCAST_CRON_SECRET
         sync: false

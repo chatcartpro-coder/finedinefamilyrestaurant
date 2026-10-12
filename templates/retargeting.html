@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>Customer Retargeting</h1>
+    <p>Automatically message customers who've opted in but haven't ordered in a while.</p>
+  </div>
+</div>
+
+{% if message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg);">{{ message }}</div>{% endif %}
+{% if error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg);">{{ error }}</div>{% endif %}
+{% if tmpl_error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg);">Could not load WhatsApp templates: {{ tmpl_error }}</div>{% endif %}
+
+<div class="grid-2">
+  <div class="panel">
+    <h2>Campaign settings</h2>
+    {% if not approved_templates %}
+    <p class="muted">No APPROVED WhatsApp templates yet. Create a <b>MARKETING</b>-category template on the <a href="/admin/whatsapp/templates">WhatsApp Templates</a> page and wait for Meta's approval before a campaign can send anything.</p>
+    {% else %}
+    <form method="post" action="/admin/retargeting" class="form-grid">
+      <label class="full"><input type="checkbox" name="enabled" value="1" {{ 'checked' if settings and settings.enabled }}> Enable scheduled broadcasts</label>
+      <label class="full">Template
+        <select name="template_name">
+          {% for t in approved_templates %}
+          <option value="{{ t.name }}" {{ 'selected' if settings and settings.template_name == t.name }}>{{ t.name }} ({{ t.language }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="full">Language code
+        <input type="text" name="language" value="{{ settings.language if settings else 'en_US' }}">
+      </label>
+      <label>Days inactive before messaging
+        <input type="number" name="days_inactive" value="{{ settings.days_inactive if settings else 14 }}" min="1">
+      </label>
+      <label>Cooldown between messages (days)
+        <input type="number" name="cooldown_days" value="{{ settings.cooldown_days if settings else 21 }}" min="1">
+      </label>
+      <label class="full"><input type="checkbox" name="dry_run" value="1" {{ 'checked' if not settings or settings.dry_run }}> Dry run (log who would be messaged, send nothing)</label>
+      <div class="full"><button class="btn btn-primary" type="submit">Save campaign settings</button></div>
+    </form>
+    {% endif %}
+    {% if settings and settings.updated_at %}
+    <p class="muted" style="margin-top:12px;">Last updated: {{ settings.updated_at|local_time }}</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>How this works</h2>
+    <p class="muted">Customers are asked once, naturally in conversation, whether they're OK receiving occasional offers on WhatsApp - only customers who reply YES are ever eligible here. A scheduled job checks daily for opted-in customers with no confirmed order in the configured number of days, and sends them the selected template, skipping anyone already messaged within the cooldown window.</p>
+    <p class="muted"><b>Keep "Dry run" on</b> until you've confirmed the history below shows the customers you expect - dry runs cost nothing and send nothing, but still show exactly who would be messaged.</p>
+    <p class="muted">The template must be <b>MARKETING</b> category and already approved by Meta - a UTILITY template isn't permitted for promotional content.</p>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:16px;">
+  <h2>Broadcast history</h2>
+  <table>
+    <tr><th>When</th><th>Phone</th><th>Template</th><th>Status</th><th>Error</th></tr>
+    {% for h in history %}
+    <tr>
+      <td>{{ h.created_at|local_time }}</td>
+      <td>{{ h.phone }}</td>
+      <td>{{ h.template_name }}</td>
+      <td>
+        {% if h.status == 'sent' %}<span class="badge badge-green">Sent</span>
+        {% elif h.status == 'failed' %}<span class="badge badge-grey">Failed</span>
+        {% else %}<span class="badge badge-grey">Dry run</span>
+        {% endif %}
+      </td>
+      <td class="muted">{{ h.error or '' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No broadcasts sent yet</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+{% endblock %}

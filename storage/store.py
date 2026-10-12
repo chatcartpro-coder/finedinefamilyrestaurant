@@ -235,6 +235,41 @@ def _init_schema(conn):
         created_at TEXT,
         updated_at TEXT
     );
+
+    -- Records every retargeting broadcast send attempt (sent, failed, or a
+    -- dry run) - see broadcasts/retargeting.py. Powers both the cooldown
+    -- check in get_inactive_opted_in_customers (a customer, successfully
+    -- messaged or not, isn't re-targeted again until cooldown_days have
+    -- passed) and the admin's broadcast history view.
+    CREATE TABLE IF NOT EXISTS broadcast_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        template_name TEXT NOT NULL,
+        language TEXT NOT NULL,
+        status TEXT NOT NULL,       -- 'sent' | 'failed' | 'dry_run'
+        error TEXT,
+        run_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_broadcast_log_phone_campaign
+        ON broadcast_log(phone, campaign, created_at);
+
+    -- Single-row config for the retargeting campaign (same shape as
+    -- printer_settings/billing_settings) - lets the admin configure/enable
+    -- this from the dashboard without a redeploy. dry_run defaults ON so a
+    -- freshly-deployed campaign can be verified against live data before
+    -- any real WhatsApp message goes out.
+    CREATE TABLE IF NOT EXISTS retargeting_campaign_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        enabled INTEGER NOT NULL DEFAULT 0,
+        template_name TEXT,
+        language TEXT NOT NULL DEFAULT 'en_US',
+        days_inactive INTEGER NOT NULL DEFAULT 14,
+        cooldown_days INTEGER NOT NULL DEFAULT 21,
+        dry_run INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT
+    );
     """)
     conn.commit()
 
@@ -270,6 +305,18 @@ def _init_schema(conn):
     if "last_address_text" not in customer_cols:
         conn.execute("ALTER TABLE customers ADD COLUMN last_address_text TEXT")
         conn.commit()
+    if "marketing_opt_in" not in customer_cols:
+        # NULL = never asked/no answer, 0 = declined, 1 = opted in - NULL and
+        # 0 are both excluded from broadcast eligibility (see
+        # get_inactive_opted_in_customers); NULL exists only so the admin
+        # can distinguish "never asked" from "said no" if they ever need to.
+        conn.execute("ALTER TABLE customers ADD COLUMN marketing_opt_in INTEGER")
+        conn.commit()
+    if "marketing_opt_in_asked_at" not in customer_cols:
+        # Set the first (and only) time the opt-in question is sent, so it
+        # never gets re-asked even if the customer never answers.
+        conn.execute("ALTER TABLE customers ADD COLUMN marketing_opt_in_asked_at TEXT")
+        conn.commit()
 
 
 # ---- Message dedup (Meta webhook retry protection) ----
@@ -294,14 +341,16 @@ def mark_processed(message_id: str):
 def get_customer(phone: str):
     conn = _get_conn()
     cur = conn.execute(
-        "SELECT phone, name, last_lat, last_lng, last_location_label, last_address_text "
+        "SELECT phone, name, last_lat, last_lng, last_location_label, last_address_text, "
+        "marketing_opt_in, marketing_opt_in_asked_at "
         "FROM customers WHERE phone = ?",
         (phone,),
     )
     row = cur.fetchone()
     if not row:
         return None
-    keys = ["phone", "name", "last_lat", "last_lng", "last_location_label", "last_address_text"]
+    keys = ["phone", "name", "last_lat", "last_lng", "last_location_label", "last_address_text",
+            "marketing_opt_in", "marketing_opt_in_asked_at"]
     return dict(zip(keys, row))
 
 
@@ -1479,4 +1528,125 @@ def set_current_plan(plan_id: int):
     conn.execute("UPDATE plans SET is_current = 0")
     conn.execute("UPDATE plans SET is_current = 1, updated_at = ? WHERE id = ?",
                  (datetime.now(timezone.utc).isoformat(), plan_id))
+    conn.commit()
+
+
+# ---- Marketing opt-in + customer retargeting broadcasts ----
+
+def mark_marketing_opt_in_asked(phone: str):
+    """Stamps marketing_opt_in_asked_at the first (and only) time the
+    opt-in question is sent - only sets it if not already set, so a race
+    between two near-simultaneous messages can't send the ask twice."""
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE customers SET marketing_opt_in_asked_at = ? "
+        "WHERE phone = ? AND marketing_opt_in_asked_at IS NULL",
+        (datetime.now(timezone.utc).isoformat(), phone),
+    )
+    conn.commit()
+
+
+def set_marketing_opt_in(phone: str, opted_in: bool):
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE customers SET marketing_opt_in = ? WHERE phone = ?",
+        (int(opted_in), phone),
+    )
+    conn.commit()
+
+
+def get_inactive_opted_in_customers(days_inactive: int, cooldown_days: int, campaign: str = "retargeting"):
+    """Customers eligible for a retargeting broadcast: explicitly opted in
+    (marketing_opt_in = 1 - NULL/0 are both excluded, per Meta's consent
+    requirement for MARKETING-category templates), with no confirmed order
+    in the last `days_inactive` days (or never one at all), and not already
+    sent (or attempted) a real message for this campaign within the last
+    `cooldown_days` days - a FAILED prior send still counts against the
+    cooldown, so a persistently unreachable number isn't retried every
+    single run. A 'dry_run' log entry deliberately does NOT count against
+    cooldown - dry runs exist specifically so an admin can safely test the
+    pipeline without consuming real customers' cooldown window before the
+    first real send ever goes out."""
+    conn = _get_conn()
+    cur = conn.execute("""
+        SELECT c.phone, c.name
+        FROM customers c
+        WHERE c.marketing_opt_in = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM orders o
+              WHERE o.phone = c.phone
+                AND o.confirmed_at IS NOT NULL
+                AND o.confirmed_at >= datetime('now', ?)
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM broadcast_log b
+              WHERE b.phone = c.phone
+                AND b.campaign = ?
+                AND b.status != 'dry_run'
+                AND b.created_at >= datetime('now', ?)
+          )
+        ORDER BY c.phone
+    """, (f"-{days_inactive} days", campaign, f"-{cooldown_days} days"))
+    keys = ["phone", "name"]
+    return [dict(zip(keys, row)) for row in cur.fetchall()]
+
+
+def log_broadcast(run_id: str, campaign: str, phone: str, template_name: str, language: str,
+                   status: str, error: str = None):
+    conn = _get_conn()
+    conn.execute("""
+        INSERT INTO broadcast_log (campaign, phone, template_name, language, status, error, run_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (campaign, phone, template_name, language, status, error, run_id, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
+def get_broadcast_log(campaign: str = None, limit: int = 100):
+    conn = _get_conn()
+    where, params = ("WHERE campaign = ?", [campaign]) if campaign else ("", [])
+    cur = conn.execute(f"""
+        SELECT id, campaign, phone, template_name, language, status, error, run_id, created_at
+        FROM broadcast_log {where}
+        ORDER BY id DESC
+        LIMIT ?
+    """, (*params, limit))
+    keys = ["id", "campaign", "phone", "template_name", "language", "status", "error", "run_id", "created_at"]
+    return [dict(zip(keys, row)) for row in cur.fetchall()]
+
+
+def get_retargeting_campaign_settings():
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT enabled, template_name, language, days_inactive, cooldown_days, dry_run, updated_at "
+        "FROM retargeting_campaign_settings WHERE id = 1"
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    keys = ["enabled", "template_name", "language", "days_inactive", "cooldown_days", "dry_run", "updated_at"]
+    d = dict(zip(keys, row))
+    d["enabled"] = bool(d["enabled"])
+    d["dry_run"] = bool(d["dry_run"])
+    return d
+
+
+def set_retargeting_campaign_settings(enabled: bool, template_name: str, language: str,
+                                       days_inactive: int, cooldown_days: int, dry_run: bool):
+    conn = _get_conn()
+    conn.execute("""
+        INSERT INTO retargeting_campaign_settings
+            (id, enabled, template_name, language, days_inactive, cooldown_days, dry_run, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            enabled=excluded.enabled,
+            template_name=excluded.template_name,
+            language=excluded.language,
+            days_inactive=excluded.days_inactive,
+            cooldown_days=excluded.cooldown_days,
+            dry_run=excluded.dry_run,
+            updated_at=excluded.updated_at
+    """, (
+        int(enabled), template_name, language, days_inactive, cooldown_days, int(dry_run),
+        datetime.now(timezone.utc).isoformat(),
+    ))
     conn.commit()

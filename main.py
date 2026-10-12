@@ -15,10 +15,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from admin.routes import router as admin_router
+from broadcasts.routes import router as broadcast_router
 from ai.agent import (
     compute_delivery_fee, detect_confirmation_intent, detect_delivery_preference,
-    detect_probable_address, detect_reuse_saved_address, generate_image_reply, generate_reply,
-    is_accepting_orders, operating_hours_label,
+    detect_marketing_opt_in_reply, detect_probable_address, detect_reuse_saved_address,
+    generate_image_reply, generate_reply, is_accepting_orders, operating_hours_label,
 )
 from ai.voice import TranscriptionError, transcribe
 from catalog import store as catalog_store
@@ -43,6 +44,7 @@ app = FastAPI(title=f"{config.STORE_NAME} WhatsApp AI Agent")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(admin_router)
 app.include_router(print_agent_router)
+app.include_router(broadcast_router)
 
 
 @app.exception_handler(HTTPException)
@@ -52,9 +54,10 @@ async def _admin_auth_redirect(request: Request, exc: HTTPException):
     # showing a bare JSON error.
     if exc.status_code == 401 and request.url.path.startswith("/admin"):
         return RedirectResponse("/admin/login", status_code=303)
-    # /print-agent/* is a headless JSON API client (the restaurant's print
-    # script), not a browser - always return JSON, never the HTML fallback below.
-    if request.url.path.startswith("/print-agent"):
+    # /print-agent/* and /broadcast/* are headless JSON API clients (the
+    # restaurant's print script, Render's cron job), not a browser - always
+    # return JSON, never the HTML fallback below.
+    if request.url.path.startswith("/print-agent") or request.url.path.startswith("/broadcast"):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     return HTMLResponse(str(exc.detail), status_code=exc.status_code)
 
@@ -561,6 +564,29 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
     if not already_logged:
         store.log_message(phone, "in", text)
 
+    # If we've asked the one-time marketing opt-in question and haven't
+    # gotten a clear answer yet, check for one before anything else - but
+    # an unrecognized reply (or any other message) must fall straight
+    # through to normal order handling unaffected, never block ordering on
+    # an unanswered consent question. marketing_opt_in stays NULL (the safe
+    # default - excluded from broadcasts) until a clear yes/no lands.
+    # upsert_customer(phone) with no other args is a safe no-op if a row
+    # already exists (COALESCE keeps existing fields) - guarantees a
+    # customers row exists here even for a brand-new phone whose webhook
+    # payload had no profile name to trigger the usual upsert upstream.
+    store.upsert_customer(phone)
+    customer = store.get_customer(phone)
+    if customer and customer.get("marketing_opt_in_asked_at") and customer.get("marketing_opt_in") is None:
+        opt_in_reply = detect_marketing_opt_in_reply(text)
+        if opt_in_reply is True:
+            store.set_marketing_opt_in(phone, True)
+            _send(phone, "Great, thank you! We'll let you know about offers from time to time.")
+            return
+        if opt_in_reply is False:
+            store.set_marketing_opt_in(phone, False)
+            _send(phone, "No problem, we won't send you promos.")
+            return
+
     order = store.get_active_order(phone)
 
     # If we're waiting on an explicit confirm/cancel, check that first so a
@@ -718,6 +744,17 @@ def handle_customer_message(phone: str, text: str, already_logged: bool = False)
         store.set_order_status(order["id"], "awaiting_confirmation")
 
     _send(phone, reply)
+
+    # One-time marketing opt-in ask, sent as a follow-up after the
+    # customer's actual question/order has already been answered (not
+    # interrupting it) - gated so it only ever fires once per phone, ever.
+    if customer and not customer.get("marketing_opt_in_asked_at"):
+        store.mark_marketing_opt_in_asked(phone)
+        _send(
+            phone,
+            "One quick thing - can we occasionally WhatsApp you about offers and deals? "
+            "Reply YES or NO (you can change this anytime).",
+        )
 
 
 def _prompt_final_confirmation(phone: str, order: dict):
