@@ -40,6 +40,14 @@
       <label class="full">Store phone
         <input type="text" name="store_phone" value="{{ config.STORE_PHONE or '' }}">
       </label>
+      <label class="full">Default / preferred language
+        <select name="default_language">
+          <option value="en" {{ 'selected' if config.DEFAULT_LANGUAGE == 'en' }}>English (default)</option>
+          <option value="he" {{ 'selected' if config.DEFAULT_LANGUAGE == 'he' }}>Hebrew (עברית)</option>
+          <option value="ar" {{ 'selected' if config.DEFAULT_LANGUAGE == 'ar' }}>Arabic</option>
+        </select>
+      </label>
+      <p class="muted full" style="margin-top:-8px;">Used when a customer's message is too short or ambiguous to tell what language they're writing in (e.g. just "hi") - the AI replies in this language by default instead of English. It still always switches to whatever language the customer actually writes in.</p>
       <div class="full"><button class="btn btn-primary" type="submit">Save store settings</button></div>
     </form>
   </div>

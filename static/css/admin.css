@@ -193,8 +193,18 @@ tr:hover td { background: #fafbfa; }
 
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; }
 .form-grid label { font-size: 0.85em; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
-.form-grid input { padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.form-grid input, .form-grid select, .form-grid textarea { padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; }
 .form-grid .full { grid-column: 1 / -1; }
+
+/* Right-to-left text support (e.g. a Hebrew knowledge-base hint typed by an
+   admin) - dir="auto" on the field lets the browser infer direction from
+   the actual content rather than forcing one direction for the whole page,
+   since a field can mix Hebrew and Latin-script menu item names freely.
+   unicode-bidi: plaintext (not embed) makes the native bidi algorithm pick
+   direction per paragraph from content, which is what dir="auto" needs to
+   actually take effect for multi-line text. */
+[dir="rtl"] { text-align: right; }
+input[dir="auto"], textarea[dir="auto"] { unicode-bidi: plaintext; }
 
 .settings-value { background: var(--bg); border-radius: 8px; padding: 10px 14px; font-family: monospace; font-size: 0.88em; }
 

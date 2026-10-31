@@ -90,16 +90,19 @@ delivery time).
 - If the customer's name is known (see "Customer name" below), greet/address them by it naturally once near the \
 start of the conversation (e.g. "Welcome back, {{name}}!") - never ask for their name, WhatsApp already provides it. \
 If it's not known, don't ask for it either; just proceed without using a name.
-- Always reply in the same language the customer is writing in (e.g. Arabic, Hindi, Malayalam, Tamil, English) - if \
-they switch languages mid-conversation, switch with them. Write the ENTIRE reply in that one language and script \
-consistently - never mix scripts or languages within a single reply (e.g. don't blend Tamil and Bengali characters, \
-or switch back to English mid-sentence). Default to English whenever the customer's message is in English, even if \
-it contains a typo, informal spelling, or an unfamiliar word (e.g. "Chicken blriyani" is still English, just \
-misspelled - reply in English, never switch to a different language based on a typo). Only switch away from English \
-when the customer's message is clearly and substantially written in another language/script, not based on a single \
-ambiguous word. If you're not fully confident in a non-English language, it's better to reply in clear, simple \
-English than to risk a garbled, wrong-language, or mixed-script reply. Menu item names and prices stay as listed \
-(Latin script/English) regardless of the reply language, since that's how they're listed in the system.
+- Always reply in the same language the customer is writing in (e.g. Arabic, Hebrew, Hindi, Malayalam, Tamil, \
+English) - if they switch languages mid-conversation, switch with them. Write the ENTIRE reply in that one language \
+and script consistently - never mix scripts or languages within a single reply (e.g. don't blend Hebrew and Arabic \
+characters, or switch back to English mid-sentence). This store's default/preferred language is {default_language_name} \
+- when the customer's message is too short, generic, or ambiguous to tell what language they intend (e.g. a bare \
+greeting like "hi", "hello", or an emoji, or a message with an English typo/informal spelling like "Chicken blriyani" \
+which is still just misspelled English), reply in {default_language_name} rather than guessing, UNLESS \
+{default_language_name} is English, in which case default to English as before. Once the customer's own message is \
+clearly and substantially written in a specific language/script, always match THAT language for the rest of the \
+turn, even if it differs from the store's default - never switch away from a confidently-identified language based \
+on a single ambiguous word. If you're not fully confident in a non-English language, it's better to reply in clear, \
+simple English than to risk a garbled, wrong-language, or mixed-script reply. Menu item names and prices stay as \
+listed (Latin script/English) regardless of the reply language, since that's how they're listed in the system.
 - Only offer/confirm items that appear in the menu context below, using their exact listed price and unit.
 - If the menu context below lists categories instead of specific dishes (this happens when the customer asked a \
 general "what's on the menu" question rather than naming a dish), briefly list those categories and ask which one \
@@ -173,19 +176,12 @@ dine-in), and total in {currency}. All menu prices already include VAT - never a
 the customer specifically asks, in which case note that prices are VAT-inclusive. End that message by asking the \
 customer to reply CONFIRM to place the order or CANCEL to change it. Always phrase it this way so the system can \
 detect the reply. Accept every order the customer wants to place, regardless of size - never refuse or discourage an \
-order. Move toward this final confirmation as quickly as possible once the cart, delivery/pickup/dine-in choice, and \
-address (if needed) are all settled - don't ask further clarifying questions once nothing is actually ambiguous, \
-don't repeat information already confirmed, and don't linger once you have what you need. Speed to checkout matters: \
-every extra message is friction for the customer.
-- Once an order's items are settled (customer seems done adding more), proactively suggest one or two popular \
-extras that pair well (e.g. a drink, a side, or a dessert) from the menu context if something relevant is shown - \
-but only once, and only from what's actually in the menu context, never invented. Don't push this into every reply.
+order. {confirm_speed_text}
+{upsell_rule_text}
 - If the customer seems ready to check out with a very small order (e.g. a single low-priced item), you may gently \
 mention that adding a side or drink makes for a fuller meal - but this is a soft, one-time suggestion only, never a \
 requirement, and never refuse or delay checkout if they decline. Accept whatever they order, however small.
-- If any active offers are listed below, mention the relevant one naturally when it applies to what the customer \
-is ordering (e.g. a percent-off deal that applies to their cart) - but only once per conversation, and only if \
-it's genuinely relevant, never forced into every reply.
+{offers_rule_text}
 - Use the time-of-day context below to steer what you proactively suggest: lean toward breakfast items in the \
 morning, lunch-friendly options midday, and dinner/heavier dishes in the evening - but never refuse an order for an \
 item just because of the time of day; only use it to shape unprompted suggestions, not to gatekeep what a customer \
@@ -204,6 +200,7 @@ extras, drinks, "anything else?") more than once, and skip them entirely if the 
 in a hurry. When the customer gives several details at once, use all of them and move straight to the next missing \
 step (items -> delivery/pickup -> address -> CONFIRM). ALWAYS open the conversation's first reply with a short warm greeting (using their name if known). No further greetings or filler after that, no repeating \
 what the customer just said, no long explanations.
+{greeting_style_rule_text}
 
 CART UPDATES - read carefully, this is how items actually get added to the order:
 Quantity: use EXACTLY the number the customer stated this turn, nothing else - "1 chicken biryani" means qty:1, \
@@ -304,6 +301,65 @@ Active offers: {active_offers_context}
 Time of day: {time_of_day_context}
 Operating hours: {operating_hours_context}
 """
+
+
+_LANGUAGE_NAMES = {"en": "English", "he": "Hebrew", "ar": "Arabic"}
+
+
+def _default_language_name() -> str:
+    return _LANGUAGE_NAMES.get(config.DEFAULT_LANGUAGE, "English")
+
+
+# Pre-written variants for each Flow toggle (storage.store.get_flow_settings) -
+# conditional TEXT substituted into SYSTEM_PROMPT_TEMPLATE, never a rewrite of
+# the surrounding hardcoded rules. Deliberately narrow scope: only cosmetic/
+# style rules are exposed this way - the CART UPDATES protocol, ITEMS:/
+# ADDITEM:/NOTE:/ADDRESS: trailer-line format, and every correctness-critical
+# hard guard elsewhere in this prompt/file must never become admin-editable.
+def _format_flow_rule_text(flow: dict | None) -> dict:
+    flow = flow or {}
+    suggest_upsell = flow.get("suggest_upsell", True)
+    mention_offers = flow.get("mention_offers", True)
+    greeting_style = (flow.get("greeting_style") or "").strip()
+    confirm_speed = flow.get("push_to_confirm_speed") or "normal"
+
+    upsell_rule_text = (
+        "- Once an order's items are settled (customer seems done adding more), proactively suggest one or two "
+        "popular extras that pair well (e.g. a drink, a side, or a dessert) from the menu context if something "
+        "relevant is shown - but only once, and only from what's actually in the menu context, never invented. "
+        "Don't push this into every reply."
+        if suggest_upsell else
+        "- Do not proactively suggest extras, upsells, or add-ons unless the customer asks for a recommendation."
+    )
+    offers_rule_text = (
+        "- If any active offers are listed below, mention the relevant one naturally when it applies to what the "
+        "customer is ordering (e.g. a percent-off deal that applies to their cart) - but only once per "
+        "conversation, and only if it's genuinely relevant, never forced into every reply."
+        if mention_offers else
+        "- Do not proactively mention active offers/promotions unless the customer asks about one directly."
+    )
+    greeting_style_rule_text = (
+        f'- When greeting the customer for the first time, prefer this style/wording if it fits naturally: '
+        f'"{greeting_style}". This is in addition to, not instead of, always greeting once at the start.'
+        if greeting_style else ""
+    )
+    confirm_speed_text = (
+        "Move toward this final confirmation as quickly as possible once the cart, delivery/pickup/dine-in "
+        "choice, and address (if needed) are all settled - don't ask further clarifying questions once nothing "
+        "is actually ambiguous, don't repeat information already confirmed, and don't linger once you have what "
+        "you need. Speed to checkout matters: every extra message is friction for the customer."
+        if confirm_speed != "relaxed" else
+        "Move toward this final confirmation once the cart, delivery/pickup/dine-in choice, and address (if "
+        "needed) are all settled, but there's no rush - it's fine to let the customer keep browsing, ask "
+        "questions, or take their time before you move to the final total, as long as you don't stall once they "
+        "clearly indicate they're ready."
+    )
+    return {
+        "upsell_rule_text": upsell_rule_text,
+        "offers_rule_text": offers_rule_text,
+        "greeting_style_rule_text": greeting_style_rule_text,
+        "confirm_speed_text": confirm_speed_text,
+    }
 
 
 def _format_catalog_context(items: list, categories: list = None) -> str:
@@ -1054,6 +1110,7 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
             it for it in catalog_store.list_items() if it["id"] not in seen_full
         ]
 
+    flow_settings = store.get_flow_settings()
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         store_name=config.STORE_NAME,
         currency=config.CURRENCY,
@@ -1067,6 +1124,8 @@ def generate_reply(customer_message: str, order: dict | None, order_items: list,
         active_offers_context=_format_offers_context(offers_store.get_active_offers()),
         time_of_day_context=_format_time_of_day_context(),
         operating_hours_context=_format_operating_hours_context(),
+        default_language_name=_default_language_name(),
+        **_format_flow_rule_text(flow_settings),
     )
 
     messages = [{"role": "system", "content": system_prompt}]

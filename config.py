@@ -127,6 +127,15 @@ class Config:
     # dinner/etc.) for AI recommendations - defaults to UTC if unset.
     STORE_TIMEZONE = os.getenv("STORE_TIMEZONE", "UTC")
 
+    # The language the AI replies in when a customer's message is too short/
+    # ambiguous to tell what language they intend (e.g. a bare "hi") - see
+    # ai/agent.py's _default_language_name() and SYSTEM_PROMPT_TEMPLATE's
+    # multilingual rule. The AI always switches to whatever language the
+    # customer actually writes in regardless of this setting; this only
+    # changes the fallback guess for unclear input. 'en' reproduces the
+    # original (pre-this-setting) behavior exactly.
+    DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "en")
+
     # Operating hours (24h local time, STORE_TIMEZONE) - orders are only
     # accepted between STORE_OPEN_HOUR and STORE_CLOSE_HOUR. A close hour
     # past midnight (e.g. 2 for 2 AM) is treated as "the next day" - see
@@ -190,6 +199,8 @@ def apply_store_settings_override():
         config.FREE_DELIVERY_THRESHOLD = saved["free_delivery_threshold"]
     if saved.get("store_phone"):
         config.STORE_PHONE = saved["store_phone"]
+    if saved.get("default_language"):
+        config.DEFAULT_LANGUAGE = saved["default_language"]
 
 
 def apply_whatsapp_connection_override():

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1>Flow &amp; Knowledge Base</h1>
+    <p>How the AI talks, and what it knows about the menu, without touching code.</p>
+  </div>
+</div>
+
+{% if message %}<div class="panel" style="background:var(--green-bg); color:var(--green-fg);">{{ message }}</div>{% endif %}
+{% if error %}<div class="panel" style="background:var(--red-bg); color:var(--red-fg);">{{ error }}</div>{% endif %}
+
+<div class="panel" style="margin-bottom:16px;">
+  <h2>Flow settings</h2>
+  <p class="muted">A few conversational style knobs. Everything about how items get added, confirmed, and printed stays fixed for safety - these only change tone and pacing.</p>
+  <form method="post" action="/admin/flow-kb/flow" class="form-grid">
+    <label class="full"><input type="checkbox" name="suggest_upsell" value="1" {{ 'checked' if not flow_settings or flow_settings.suggest_upsell }}> Proactively suggest extras/upsells (drinks, sides, desserts)</label>
+    <label class="full"><input type="checkbox" name="mention_offers" value="1" {{ 'checked' if not flow_settings or flow_settings.mention_offers }}> Mention relevant active offers when they apply</label>
+    <label class="full">Preferred greeting wording <span class="muted">(optional - leave blank to use the default greeting)</span>
+      <input type="text" name="greeting_style" dir="auto" value="{{ flow_settings.greeting_style if flow_settings else '' }}" placeholder="e.g. Shalom! Welcome to the restaurant">
+    </label>
+    <label class="full">Checkout pace
+      <select name="push_to_confirm_speed">
+        <option value="normal" {{ 'selected' if not flow_settings or flow_settings.push_to_confirm_speed == 'normal' }}>Normal - move to checkout quickly once the order is settled</option>
+        <option value="relaxed" {{ 'selected' if flow_settings and flow_settings.push_to_confirm_speed == 'relaxed' }}>Relaxed - let the customer browse/ask questions longer before nudging to confirm</option>
+      </select>
+    </label>
+    <div class="full"><button class="btn btn-primary" type="submit">Save flow settings</button></div>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>Knowledge base ({{ kb_entries|length }})</h2>
+  <p class="muted">Tells the AI what clarifying question to ask before adding an item or category to an order (e.g. spice level, size, sweetness) - it never invents menu items or prices, only what to ask. An entry here overrides the built-in default for that exact item/category name, or adds a new one.</p>
+  <table>
+    <tr><th>Scope</th><th>Item / Category name</th><th>Hint</th><th></th></tr>
+    {% for e in kb_entries %}
+    <tr>
+      <td>{{ e.scope }}</td>
+      <td>
+        <input type="text" name="name" dir="auto" value="{{ e.name }}" style="width:160px;" form="kb-edit-{{ e.id }}">
+      </td>
+      <td>
+        <input type="text" name="hint" dir="auto" value="{{ e.hint }}" style="width:100%;" form="kb-edit-{{ e.id }}">
+      </td>
+      <td style="white-space:nowrap;">
+        <form id="kb-edit-{{ e.id }}" method="post" action="/admin/flow-kb/kb/{{ e.id }}/edit" style="display:inline;"></form>
+        <button class="btn btn-outline" type="submit" form="kb-edit-{{ e.id }}">Save</button>
+        <form method="post" action="/admin/flow-kb/kb/{{ e.id }}/delete" style="display:inline;"><button class="btn btn-outline" type="submit">Delete</button></form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No custom entries yet - the AI still uses its built-in defaults.</td></tr>
+    {% endfor %}
+  </table>
+
+  <details style="margin-top:16px;">
+    <summary class="muted" style="cursor:pointer;">Add an entry</summary>
+    <form method="post" action="/admin/flow-kb/kb" class="form-grid" style="margin-top:12px;">
+      <label>Scope
+        <select name="scope">
+          <option value="item">Item (exact menu item name)</option>
+          <option value="category">Category</option>
+        </select>
+      </label>
+      <label>Item / Category name
+        <input type="text" name="name" dir="auto" required placeholder="e.g. Karak, or Hot Beverages">
+      </label>
+      <label class="full">Hint - what should the AI ask before adding this?
+        <textarea name="hint" dir="auto" rows="2" required placeholder="e.g. Ask how sweet they'd like it and how strong to brew it."></textarea>
+      </label>
+      <div class="full"><button class="btn btn-primary" type="submit">Add entry</button></div>
+    </form>
+  </details>
+</div>
+
+{% endblock %}

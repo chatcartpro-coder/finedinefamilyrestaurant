@@ -142,6 +142,35 @@ def _init_schema(conn):
         updated_at TEXT
     );
 
+    -- Admin-editable overrides/additions to ai/ordering_knowledge.py's
+    -- hardcoded ITEM_CLARIFICATIONS/CATEGORY_CLARIFICATIONS dicts - see
+    -- get_clarification_hints()'s hybrid lookup (DB rows override/extend
+    -- the hardcoded fallback, never replace it outright, so a fresh/empty
+    -- DB behaves identically to before this table existed).
+    CREATE TABLE IF NOT EXISTS kb_clarifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope TEXT NOT NULL CHECK (scope IN ('item', 'category')),
+        name TEXT NOT NULL,
+        hint TEXT NOT NULL,
+        updated_at TEXT,
+        UNIQUE(scope, name)
+    );
+
+    -- Single-row admin toggles for a small, deliberately narrow set of
+    -- conversational style knobs (upsell suggestions, offer mentions,
+    -- greeting wording, checkout pace) - see ai/agent.py's SYSTEM_PROMPT_
+    -- TEMPLATE interpolation. Never touches the CART UPDATES/ITEMS:/
+    -- ADDITEM:/NOTE:/ADDRESS: protocol or any correctness-critical hard
+    -- guard - those stay hardcoded, only cosmetic/style rules are exposed.
+    CREATE TABLE IF NOT EXISTS flow_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        suggest_upsell INTEGER NOT NULL DEFAULT 1,
+        mention_offers INTEGER NOT NULL DEFAULT 1,
+        greeting_style TEXT,
+        push_to_confirm_speed TEXT NOT NULL DEFAULT 'normal',
+        updated_at TEXT
+    );
+
     -- Holds the WhatsApp Business Account connected via Embedded Signup
     -- (Coexistence or standalone Cloud API number), overriding the
     -- .env-configured WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID once set.
@@ -316,6 +345,17 @@ def _init_schema(conn):
         # Set the first (and only) time the opt-in question is sent, so it
         # never gets re-asked even if the customer never answers.
         conn.execute("ALTER TABLE customers ADD COLUMN marketing_opt_in_asked_at TEXT")
+        conn.commit()
+
+    store_settings_cols = [row[1] for row in conn.execute("PRAGMA table_info(store_settings)").fetchall()]
+    if "default_language" not in store_settings_cols:
+        # NULL/'en' = today's behavior unchanged (English fallback for an
+        # ambiguous/short message like "hi"); 'he'/'ar' makes that language
+        # the fallback instead - see ai/agent.py's _default_language_name
+        # and the multilingual rule in SYSTEM_PROMPT_TEMPLATE. The AI still
+        # always switches to whatever language the customer actually writes
+        # in, regardless of this setting.
+        conn.execute("ALTER TABLE store_settings ADD COLUMN default_language TEXT")
         conn.commit()
 
 
@@ -950,30 +990,119 @@ def set_billing_settings(enabled: bool, api_base_url: str = None, api_key: str =
 def get_store_settings():
     conn = _get_conn()
     cur = conn.execute(
-        "SELECT store_name, currency, delivery_fee, free_delivery_threshold, store_phone, updated_at "
+        "SELECT store_name, currency, delivery_fee, free_delivery_threshold, store_phone, default_language, updated_at "
         "FROM store_settings WHERE id = 1"
     )
     row = cur.fetchone()
     if not row:
         return None
-    keys = ["store_name", "currency", "delivery_fee", "free_delivery_threshold", "store_phone", "updated_at"]
+    keys = ["store_name", "currency", "delivery_fee", "free_delivery_threshold", "store_phone", "default_language", "updated_at"]
     return dict(zip(keys, row))
 
 
 def set_store_settings(store_name: str = None, currency: str = None, delivery_fee: float = None,
-                        free_delivery_threshold: float = None, store_phone: str = None):
+                        free_delivery_threshold: float = None, store_phone: str = None,
+                        default_language: str = None):
     conn = _get_conn()
     conn.execute("""
-        INSERT INTO store_settings (id, store_name, currency, delivery_fee, free_delivery_threshold, store_phone, updated_at)
-        VALUES (1, ?, ?, ?, ?, ?, ?)
+        INSERT INTO store_settings (id, store_name, currency, delivery_fee, free_delivery_threshold, store_phone, default_language, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             store_name=excluded.store_name,
             currency=excluded.currency,
             delivery_fee=excluded.delivery_fee,
             free_delivery_threshold=excluded.free_delivery_threshold,
             store_phone=excluded.store_phone,
+            default_language=excluded.default_language,
             updated_at=excluded.updated_at
-    """, (store_name, currency, delivery_fee, free_delivery_threshold, store_phone, datetime.now(timezone.utc).isoformat()))
+    """, (store_name, currency, delivery_fee, free_delivery_threshold, store_phone, default_language, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+
+
+# ---- Knowledge base (admin-editable overrides for ai/ordering_knowledge.py) ----
+
+def list_kb_clarifications(scope: str = None) -> list:
+    conn = _get_conn()
+    if scope:
+        cur = conn.execute(
+            "SELECT id, scope, name, hint, updated_at FROM kb_clarifications WHERE scope = ? ORDER BY name",
+            (scope,),
+        )
+    else:
+        cur = conn.execute("SELECT id, scope, name, hint, updated_at FROM kb_clarifications ORDER BY scope, name")
+    keys = ["id", "scope", "name", "hint", "updated_at"]
+    return [dict(zip(keys, row)) for row in cur.fetchall()]
+
+
+def get_kb_clarification(kb_id: int):
+    conn = _get_conn()
+    cur = conn.execute("SELECT id, scope, name, hint, updated_at FROM kb_clarifications WHERE id = ?", (kb_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    return dict(zip(["id", "scope", "name", "hint", "updated_at"], row))
+
+
+def create_kb_clarification(scope: str, name: str, hint: str) -> int:
+    """Upserts by (scope, name) - re-adding the same item/category name just
+    updates its hint rather than erroring or creating a duplicate."""
+    conn = _get_conn()
+    cur = conn.execute("""
+        INSERT INTO kb_clarifications (scope, name, hint, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(scope, name) DO UPDATE SET hint=excluded.hint, updated_at=excluded.updated_at
+    """, (scope, name.strip(), hint.strip(), datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_kb_clarification(kb_id: int, name: str, hint: str):
+    conn = _get_conn()
+    conn.execute(
+        "UPDATE kb_clarifications SET name = ?, hint = ?, updated_at = ? WHERE id = ?",
+        (name.strip(), hint.strip(), datetime.now(timezone.utc).isoformat(), kb_id),
+    )
+    conn.commit()
+
+
+def delete_kb_clarification(kb_id: int):
+    conn = _get_conn()
+    conn.execute("DELETE FROM kb_clarifications WHERE id = ?", (kb_id,))
+    conn.commit()
+
+
+# ---- Flow settings (small set of admin-editable conversational style knobs) ----
+
+def get_flow_settings():
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT suggest_upsell, mention_offers, greeting_style, push_to_confirm_speed, updated_at "
+        "FROM flow_settings WHERE id = 1"
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+    keys = ["suggest_upsell", "mention_offers", "greeting_style", "push_to_confirm_speed", "updated_at"]
+    d = dict(zip(keys, row))
+    d["suggest_upsell"] = bool(d["suggest_upsell"])
+    d["mention_offers"] = bool(d["mention_offers"])
+    return d
+
+
+def set_flow_settings(suggest_upsell: bool, mention_offers: bool, greeting_style: str, push_to_confirm_speed: str):
+    conn = _get_conn()
+    conn.execute("""
+        INSERT INTO flow_settings (id, suggest_upsell, mention_offers, greeting_style, push_to_confirm_speed, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            suggest_upsell=excluded.suggest_upsell,
+            mention_offers=excluded.mention_offers,
+            greeting_style=excluded.greeting_style,
+            push_to_confirm_speed=excluded.push_to_confirm_speed,
+            updated_at=excluded.updated_at
+    """, (
+        int(suggest_upsell), int(mention_offers), greeting_style, push_to_confirm_speed,
+        datetime.now(timezone.utc).isoformat(),
+    ))
     conn.commit()
 
 

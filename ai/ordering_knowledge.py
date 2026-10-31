@@ -49,16 +49,33 @@ def get_clarification_hints(items: list) -> str:
     dict with at least "name" and "category"). Item-specific guidance wins
     over category-level guidance for the same item, so a mixed category
     (like Hot Beverages) doesn't get one-size-fits-all questions applied to
-    items that don't fit them."""
+    items that don't fit them.
+
+    Merges in admin-editable overrides/additions from the dashboard's Flow &
+    Knowledge Base page (storage.store's kb_clarifications table) on top of
+    the hardcoded dicts above - a DB row for a name that also exists in
+    ITEM_CLARIFICATIONS/CATEGORY_CLARIFICATIONS wins (lets an admin correct a
+    hardcoded hint without a code change); a DB row for a brand-new name
+    (e.g. a menu item added after this file was last edited) is simply
+    added. The hardcoded dicts are a permanent fallback layer, never
+    migrated/deleted into the DB, so a fresh or empty database behaves
+    identically to before this table existed - this function still works
+    correctly with zero DB rows."""
+    from storage import store  # deferred import avoids a circular import at module load time
+
+    db_rows = store.list_kb_clarifications()
+    item_map = {**ITEM_CLARIFICATIONS, **{r["name"]: r["hint"] for r in db_rows if r["scope"] == "item"}}
+    category_map = {**CATEGORY_CLARIFICATIONS, **{r["name"]: r["hint"] for r in db_rows if r["scope"] == "category"}}
+
     lines = []
     seen_categories = set()
     for it in items:
         name, category = it.get("name"), it.get("category")
-        if name in ITEM_CLARIFICATIONS:
-            lines.append(f"- {name}: {ITEM_CLARIFICATIONS[name]}")
-        elif category in CATEGORY_CLARIFICATIONS and category not in seen_categories:
+        if name in item_map:
+            lines.append(f"- {name}: {item_map[name]}")
+        elif category in category_map and category not in seen_categories:
             seen_categories.add(category)
-            lines.append(f"- {category}: {CATEGORY_CLARIFICATIONS[category]}")
+            lines.append(f"- {category}: {category_map[category]}")
     if not lines:
         return "(No clarifications apply to the items shown above.)"
     return "\n".join(lines)

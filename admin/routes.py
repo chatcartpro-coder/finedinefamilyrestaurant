@@ -709,15 +709,74 @@ def billing_plans_edit(
 
 
 @router.post("/billing/plans/{plan_id}/delete")
-def billing_plans_delete(plan_id: int, admin=Depends(get_current_admin)):
+def billing_plans_delete(plan_id: int, request: Request, admin=Depends(get_current_admin)):
     store.delete_plan(plan_id)
     return render(request, "billing.html", **_billing_context(admin, message="Plan deleted."))
 
 
 @router.post("/billing/plans/{plan_id}/set-current")
-def billing_plans_set_current(plan_id: int, admin=Depends(get_current_admin)):
+def billing_plans_set_current(plan_id: int, request: Request, admin=Depends(get_current_admin)):
     store.set_current_plan(plan_id)
     return render(request, "billing.html", **_billing_context(admin, message="Current plan updated."))
+
+
+# ---- Flow & Knowledge Base ----
+
+def _flow_kb_context(admin, message=None, error=None):
+    return dict(
+        active_page="flow_kb", admin=admin,
+        flow_settings=store.get_flow_settings(),
+        kb_entries=store.list_kb_clarifications(),
+        message=message, error=error,
+    )
+
+
+@router.get("/flow-kb", response_class=HTMLResponse)
+def flow_kb_page(request: Request, admin=Depends(get_current_admin)):
+    return render(request, "flow_kb.html", **_flow_kb_context(admin))
+
+
+@router.post("/flow-kb/flow")
+def flow_kb_save_flow(
+    request: Request, admin=Depends(get_current_admin),
+    suggest_upsell: str = Form(""), mention_offers: str = Form(""),
+    greeting_style: str = Form(""), push_to_confirm_speed: str = Form("normal"),
+):
+    if push_to_confirm_speed not in ("normal", "relaxed"):
+        return render(request, "flow_kb.html", **_flow_kb_context(admin, error="Invalid checkout pace."))
+    store.set_flow_settings(
+        suggest_upsell=bool(suggest_upsell), mention_offers=bool(mention_offers),
+        greeting_style=greeting_style.strip() or None, push_to_confirm_speed=push_to_confirm_speed,
+    )
+    return render(request, "flow_kb.html", **_flow_kb_context(admin, message="Flow settings saved."))
+
+
+@router.post("/flow-kb/kb")
+def flow_kb_add(
+    request: Request, admin=Depends(get_current_admin),
+    scope: str = Form(...), name: str = Form(...), hint: str = Form(...),
+):
+    if scope not in ("item", "category") or not name.strip() or not hint.strip():
+        return render(request, "flow_kb.html", **_flow_kb_context(admin, error="Scope, name, and hint are all required."))
+    store.create_kb_clarification(scope, name, hint)
+    return render(request, "flow_kb.html", **_flow_kb_context(admin, message="Knowledge base entry saved."))
+
+
+@router.post("/flow-kb/kb/{kb_id}/edit")
+def flow_kb_edit(
+    kb_id: int, request: Request, admin=Depends(get_current_admin),
+    name: str = Form(...), hint: str = Form(...),
+):
+    if not name.strip() or not hint.strip():
+        return render(request, "flow_kb.html", **_flow_kb_context(admin, error="Name and hint are both required."))
+    store.update_kb_clarification(kb_id, name, hint)
+    return render(request, "flow_kb.html", **_flow_kb_context(admin, message="Knowledge base entry updated."))
+
+
+@router.post("/flow-kb/kb/{kb_id}/delete")
+def flow_kb_delete(kb_id: int, request: Request, admin=Depends(get_current_admin)):
+    store.delete_kb_clarification(kb_id)
+    return render(request, "flow_kb.html", **_flow_kb_context(admin, message="Knowledge base entry deleted."))
 
 
 # ---- Printer ----
@@ -831,7 +890,7 @@ def settings_save_store(
     request: Request, admin=Depends(get_current_admin),
     store_name: str = Form(...), currency: str = Form(...),
     delivery_fee: str = Form(...), free_delivery_threshold: str = Form(...),
-    store_phone: str = Form(""),
+    store_phone: str = Form(""), default_language: str = Form("en"),
 ):
     from config import apply_store_settings_override
 
@@ -846,11 +905,13 @@ def settings_save_store(
         return render(request, "settings.html", active_page="settings", admin=admin, message=None, error="Delivery fee and free delivery threshold must be numbers.")
     if delivery_fee_val < 0 or free_delivery_threshold_val < 0:
         return render(request, "settings.html", active_page="settings", admin=admin, message=None, error="Delivery fee and free delivery threshold can't be negative.")
+    if default_language not in ("en", "he", "ar"):
+        return render(request, "settings.html", active_page="settings", admin=admin, message=None, error="Invalid default language.")
 
     store.set_store_settings(
         store_name=store_name.strip(), currency=currency.strip(),
         delivery_fee=delivery_fee_val, free_delivery_threshold=free_delivery_threshold_val,
-        store_phone=store_phone.strip() or None,
+        store_phone=store_phone.strip() or None, default_language=default_language,
     )
     apply_store_settings_override()  # take effect immediately, no restart needed
     return render(request, "settings.html", active_page="settings", admin=admin, message="Store settings saved.", error=None)
